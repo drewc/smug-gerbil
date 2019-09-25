@@ -702,6 +702,7 @@ to implement Wadler’s monad comprehension notation. Using this
 notation can make parsers much easier to read, and we will use the
 notation in the remainder of this article.
 
+#+NAME: syntax-defp
 #+begin_src gerbil 
   (def current-parser (make-parameter Parser))
 
@@ -971,7 +972,7 @@ many p = [x:xs | x <- p, xs <- many p] ++ [[]]
  #+begin_src gerbil
    (defp (int) 
      (def (op) (++ (let*-monad ((_ (char #\-))) (result (cut - <>))) (result identity)))
-       (let*-monad ((f (op)) (n (nat))) (result (f n)))))
+       (let*-monad ((f (op)) (n (nat))) (result (f n))))
 
  #+end_src
 
@@ -3821,7 +3822,7 @@ Marktoberdorf Summer school on program design calculi. Springer–Verlag.
 * /file/ monparsing.ss
 
 #+begin_src gerbil :noweb yes :tangle monparsing.ss
- (import :std/iter :std/srfi/13)
+ (import :std/iter :std/srfi/13 (for-syntax :drewc/smug/interface))
  
  <<gerbil-result>>
 
@@ -3843,13 +3844,16 @@ Marktoberdorf Summer school on program design calculi. Springer–Verlag.
 
  <<gerbil-word>>
 
- <<monad-interface-class>>
 
- <<gerbil-zero-plus-interface>> 
+ (begin-syntax 
+  <<monad-interface-class>>
+  <<gerbil-zero-plus-interface>>)
 
  <<def-Parser>>
 
  <<gerbil-let*-monad>>
+
+ <<syntax-defp>>
  
  <<gerbil-parser-string>>
 

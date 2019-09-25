@@ -1,4 +1,4 @@
-(import :std/iter :std/srfi/13)
+(import :std/iter :std/srfi/13 (for-syntax :drewc/smug/interface))
 
 (def (result v) (lambda (inp) [[v . inp]]))
 
@@ -38,11 +38,12 @@
     (bind (letter) (lambda (x) (bind (word) (lambda (xs) (result (format "~a~a" x xs)))))))
   (plus (neWord) (result "")))
 
-(define-interface-class Monad
-  (result bind))
 
-(define-interface-class (Monad0Plus Monad)
-  (zero ++)) 
+(begin-syntax 
+ (define-interface-class Monad
+   (result bind))
+ (define-interface-class (Monad0Plus Monad)
+   (zero ++)))
 
 (def Parser
   (make-interface 'Monad0Plus
@@ -71,6 +72,16 @@
     ((macro () body ...)
      #'(begin body ...))))
 
+(def current-parser (make-parameter Parser))
+
+(defsyntax (defp stx)
+  (syntax-case stx ()
+    ((macro (parser args ...) body ...)
+     (let ((b (syntax->datum #'(body ...))))
+       (with-syntax ((l (datum->syntax #'macro
+                          `(with-interface (Monad0Plus (current-parser)) ((lambda _ ,@b))))))
+         #'(def (parser args ...) l))))))
+
 (defp (string str)
    (if (string-null? str)
        (result "")
@@ -88,7 +99,6 @@
     (result (with-input-from-string (list->string xs) read)))
   (mlet* ((xs (many1 (digit)))) (result xs)))
 
-(def (int) 
-  (with-interface Parser
-    (let (op (++ (let*-monad ((_ (char #\-))) (result (cut - <>))) (result identity)))
-      (let*-monad ((f op) (n (nat))) (result (f n))))))
+(defp (int) 
+  (def (op) (++ (let*-monad ((_ (char #\-))) (result (cut - <>))) (result identity)))
+    (let*-monad ((f (op)) (n (nat))) (result (f n))))

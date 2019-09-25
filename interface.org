@@ -303,24 +303,27 @@ syntax, how we describe them declares what type of symbol they are.
 * /file/ interface.ss
 
 #+begin_src gerbil :noweb yes :tangle interface.ss
-(import :gerbil/core :std/format :std/iter :std/sugar :std/generic :std/misc/rtd)
+(import :gerbil/core (for-syntax :std/format) :std/iter :std/sugar :std/generic 
+ (for-syntax :std/misc/rtd))
 (export with-interface define-interface-class make-interface)
 
-<<interface-symbols-def>>
+(begin-syntax 
+ <<interface-symbols-def>>
 
-<<description->interface-symbol>>
+ <<description->interface-symbol>>
 
-<<bind-interface-init!>>
+ <<bind-interface-init!>>
 
-<<defclass-interface>>
+ <<defclass-interface>>
 
-<<make-interface-class>>
+ <<make-interface-class>>)
 
 <<define-interface-class>>
 
 <<make-interface>>
 
-<<interface-symbol-form>>
+(begin-syntax 
+  <<interface-symbol-form>>)
 
 <<with-interface>>
 #+end_src

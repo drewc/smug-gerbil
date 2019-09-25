@@ -1,82 +1,84 @@
-(import :gerbil/core :std/format :std/iter :std/sugar :std/generic :std/misc/rtd)
+(import :gerbil/core (for-syntax :std/format) :std/iter :std/sugar :std/generic 
+ (for-syntax :std/misc/rtd))
 (export with-interface define-interface-class make-interface)
 
-(defstruct interface-symbol (name))
+(begin-syntax 
+ (defstruct interface-symbol (name))
+ 
+ (defstruct (interface-slot interface-symbol)
+   (value))
+ 
+ (defstruct (interface-inline interface-symbol)
+   (form))
+ 
+ (defstruct (interface-alias interface-symbol)
+   (to-name))
 
-(defstruct (interface-slot interface-symbol)
-  (value))
+ (def (description->interface-symbol description)
+   (cond
+    ;; If the description is just a symbol, this a reference to a slot.
+    ;; Use the absent-obj so we do not have a default value.
+    ((symbol? description)
+     (make-interface-slot description absent-obj))
+    ;; If it's a list, match it!
+    ((list? description)
+     (match description
+       ;; (name inline: value) is inline form
+       ([name inline: form] (make-interface-inline name form))
+       ;; ((name . args) . body) is an inline form with (lambda args body ...)
+       ([[name . args] . body] (make-interface-inline name `(lambda ,args ,@body)))
+       ;; (name alias: to-name) is an alias
+       ([name alias: to-name] (make-interface-alias name to-name))
+       ;; otherwise, slot and default value
+       ([name default] (make-interface-slot name default))))
+    (else (error "Invalid Interface Description syntax"))))
 
-(defstruct (interface-inline interface-symbol)
-  (form))
+ (def (bind-interface-init! klass interface-symbols)
+   (bind-method! 
+    klass ':init! 
+    (lambda (self . args)
+      (def (add-args (syms interface-symbols))
+        (let* ((isym (car syms))
+               (sym (interface-symbol-name isym))
+               (key (symbol->keyword sym)))
+          (if (and (interface-slot? isym)
+                   (not (eqv? absent-obj (interface-slot-value isym)))
+                   (not (member key args)))
+            (set! args (append [key (interface-slot-value isym)] args))
+            (unless (null? (cdr syms)) (add-args (cdr syms))))))
+      (add-args)
+      (apply call-next-method klass self ':init! args))))
 
-(defstruct (interface-alias interface-symbol)
-  (to-name))
+ (defclass Interface () constructor: :init!)
+ 
+ (defmethod {:init! Interface}
+   (cut class-instance-init! <...>))
+ 
+ (defmethod {interface-symbols Interface}
+   (lambda _ []))
 
-(def (description->interface-symbol description)
-  (cond
-   ;; If the description is just a symbol, this a reference to a slot.
-   ;; Use the absent-obj so we do not have a default value.
-   ((symbol? description)
-    (make-interface-slot description absent-obj))
-   ;; If it's a list, match it!
-   ((list? description)
-    (match description
-      ;; (name inline: value) is inline form
-      ([name inline: form] (make-interface-inline name form))
-      ;; ((name . args) . body) is an inline form with (lambda args body ...)
-      ([[name . args] . body] (make-interface-inline name `(lambda ,args ,@body)))
-      ;; (name alias: to-name) is an alias
-      ([name alias: to-name] (make-interface-alias name to-name))
-      ;; otherwise, slot and default value
-      ([name default] (make-interface-slot name default))))
-   (else (error "Invalid Interface Description syntax"))))
-
-(def (bind-interface-init! klass interface-symbols)
-  (bind-method! 
-   klass ':init! 
-   (lambda (self . args)
-     (def (add-args (syms interface-symbols))
-       (let* ((isym (car syms))
-              (sym (interface-symbol-name isym))
-              (key (symbol->keyword sym)))
-         (if (and (interface-slot? isym)
-                  (not (eqv? absent-obj (interface-slot-value isym)))
-                  (not (member key args)))
-           (set! args (append [key (interface-slot-value isym)] args))
-           (unless (null? (cdr syms)) (add-args (cdr syms))))))
-     (add-args)
-     (apply call-next-method klass self ':init! args))))
-
-(defclass Interface () constructor: :init!)
-
-(defmethod {:init! Interface}
-  (cut class-instance-init! <...>))
-
-(defmethod {interface-symbols Interface}
-  (lambda _ []))
-
-(def (make-interface-class name supers descriptions)
- (def interface-symbols (map description->interface-symbol descriptions))
- (def interface-slots (filter interface-slot? interface-symbols))
-
- (def interface-supers (map (lambda (s)
-                              (if (class-type? s) s (object-type s)))
-                            supers))
- (def (create-interface-class)
-   (def slots (map interface-symbol-name interface-slots))
-   (make-class-type
-    name (append interface-supers [Interface::t])
-    slots (string->symbol (format "Interface: ~A" name))
-    [] ':init!))
-
- (let ((klass (create-interface-class)))
-   (begin0 klass
-     ;; Bind the symbols
-     (bind-method! klass 'interface-symbols
-                   (lambda (obj) (append interface-symbols
-                                    (call-next-method klass obj 'interface-symbols))))
-     ;; Bind :init!
-     (bind-interface-init! klass interface-symbols))))
+ (def (make-interface-class name supers descriptions)
+  (def interface-symbols (map description->interface-symbol descriptions))
+  (def interface-slots (filter interface-slot? interface-symbols))
+ 
+  (def interface-supers (map (lambda (s)
+                               (if (class-type? s) s (object-type s)))
+                             supers))
+  (def (create-interface-class)
+    (def slots (map interface-symbol-name interface-slots))
+    (make-class-type
+     name (append interface-supers [Interface::t])
+     slots (string->symbol (format "Interface: ~A" name))
+     [] ':init!))
+ 
+  (let ((klass (create-interface-class)))
+    (begin0 klass
+      ;; Bind the symbols
+      (bind-method! klass 'interface-symbols
+                    (lambda (obj) (append interface-symbols
+                                     (call-next-method klass obj 'interface-symbols))))
+      ;; Bind :init!
+      (bind-interface-init! klass interface-symbols)))))
 
 (defsyntax (define-interface-class stx)
  (def (description-form->description form)
@@ -121,20 +123,21 @@
                                                                   "::interface")))))
        #'(make-interface name args ...)))))
 
-(defmethod {interface-symbol-form interface-symbol}
-  (lambda (self interface-binding-name) #!void))
-
-(defmethod {interface-symbol-form interface-slot}
-  (lambda (self name)
-    `(unchecked-slot-ref ,name ',(interface-symbol-name self))))
-
-(defmethod {interface-symbol-form interface-inline}
-  (lambda (self _)
-    (interface-inline-form self)))
-
-(defmethod {interface-symbol-form interface-alias}
-  (lambda (self _)
-     (interface-alias-to-name self)))
+(begin-syntax 
+  (defmethod {interface-symbol-form interface-symbol}
+    (lambda (self interface-binding-name) #!void))
+  
+  (defmethod {interface-symbol-form interface-slot}
+    (lambda (self name)
+      `(unchecked-slot-ref ,name ',(interface-symbol-name self))))
+  
+  (defmethod {interface-symbol-form interface-inline}
+    (lambda (self _)
+      (interface-inline-form self)))
+  
+  (defmethod {interface-symbol-form interface-alias}
+    (lambda (self _)
+       (interface-alias-to-name self))))
 
 (defsyntax (with-interface stx)
   (def (interface-symbol->letrec*-binding interface-symbol interface-instance interface-binding)
@@ -168,4 +171,4 @@
      #'(macro (interface (: interface rest ...))
          body ...))
     ((macro expr body ...)
-     #'(macro (expr expr) body ...))))                    
+     #'(macro (expr expr) body ...))))
