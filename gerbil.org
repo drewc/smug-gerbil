@@ -1,0 +1,6 @@
+#+TITLE: Gerbil use
+
+#+begin_src gerbil
+gxpkg link github.com/drewc/smug-gerbil ~/src/smug-gerbil/
+gxpkg build github.com/drewc/smug-gerbil
+#+end_src

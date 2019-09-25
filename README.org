@@ -1,0 +1,7 @@
+#+TITLE: Super Monadic Über Go-into : Parsers and Gerbil Scheme
+  
+I discovered monads after writing a parser for org-mode and thinking there must
+be a better way. 
+
+This will eventually be the gerbil version. 
+
