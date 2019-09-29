@@ -11,8 +11,6 @@
    (defstruct (interface-alias interface-symbol)
      (to-name))
 
-
-
    (defclass Interface () constructor: :init!)
    
    (defmethod {:init! Interface}

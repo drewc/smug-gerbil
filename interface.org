@@ -309,8 +309,6 @@ syntax, how we describe them declares what type of symbol they are.
      (export #t)
      <<interface-symbols-def>>
 
-
-
      <<defclass-interface>>)
 
   (import :gerbil/core 
