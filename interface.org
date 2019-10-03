@@ -8,39 +8,97 @@ Gerbil Interface is a simple way to do so.
 
 * Introduction
 
-Interface libraries are a create way of bringing functional programming to
-gerbil. In particular, Monads are different things with the same functional
-interface. Gerbil interfaces are a wonderful way to express them
+Interface libraries are a creative way of bringing functional programming to
+gerbil. An interface class can by thought of as a type in the [[https://en.wikipedia.org/wiki/Hindley%25E2%2580%2593Milner_type_system][Hindley-Milner]]
+sense, with an instance allowing overloading of the same symbols.
 
-Interfaces are objects that have a class and an instance. So, a Monad interface
-has a ~result~ (aka ~return~) and a ~bind~ (aka ~>>=~) symbol that is
-automagically called. Let's define an interface class.
+So, imagine there's a type called ~Monad~ that has two functions: ~result~ (aka
+~return~ aka ~unit~) and a ~bind~ (aka ~>>=~). Let's define an interface class.
 
 #+begin_src gerbil
-  (define-interface-class Monad (result bind))
+  (define-interface-class Monad 
+    (result
+     (return alias: result)
+     (unit alias: result)
+     bind
+     (>>= alias: bind)))
   ;; => Monad::interface
 #+end_src
 
-To make an instance of an interface there is a macro, ~:~. 
+Now that we have an interface defined, we can see what it does. The list monad
+has a result which creates a list, and a bind which runs a function for every
+item in the list which itself returns a list, which is appended.
+
+In other words: 
 
 #+begin_src gerbil
-  (def IdentityMonad (: Monad result: identity bind: (lambda (mv mf) (mf mv))))
-
-  ((slot-ref IdentityMonad 'bind)
-   ((slot-ref IdentityMonad 'result) 1)
-   (cut + 41 <>))
-
-  ;; => 42
+  (with-interface (Monad result: list bind: (lambda (v f) (append-map f v)))
+    (bind (list 1 2 3) (lambda (v) (result (+ 1 v)))))
+  ;; => (2 3 4)
 #+end_src
 
-That interface is really just a wrapper for slot-ref. 
+** Overloading 
+
+Basically, the entire point of interfaces is [[https://en.wikipedia.org/wiki/Ad_hoc_polymorphism][Ad hoc polymorphism]]. We want the
+same symbols to mean different things depending on what instance of an interface
+type (aka class) they were passed. 
+
+For instance, The laws which all things must obey in order to be called a monad
+are simple. Where MF is a monadic function and MV a monadic value: 
 
 #+begin_src gerbil
-  (with-interface IdentityMonad
-    (bind (result 1) (cut + 41 <>)))
-
-  ;; => 42
+  (def (test-monad-laws monad x MV MF MF2)
+    (with-interface (Monad monad)
+     (or (equal? (bind (result x) MF) (MF x))
+         (error "Left identity"))
+     (or (equal? (bind MV result) MV)
+         (error  "Right identity"))
+     (or (equal? (bind (bind MV MF) MF2) (bind MV (lambda (x) (bind (MF x) MF2))))
+         (error  "Associativity" ))))
 #+end_src
+
+So, we'll create two instances that for sure pass the tests.
+
+#+begin_src gerbil
+  (import :std/srfi/1
+          (for-syntax :std/srfi/1))
+  (def ListMonad (make-interface 'Monad result: list bind: (lambda (v f) (append-map f v))))
+  (def IdentityMonad (make-interface 'Monad result: identity bind: (lambda (v f) (f v))))
+#+end_src
+
+Now we can use the same function on different monads.
+
+
+#+begin_src gerbil
+  (test-monad-laws IdentityMonad 1 2 (cut + 3 <>) (cut + 4 <>))
+  (test-monad-laws ListMonad 1 (list 2) (lambda (v) (list (+ 3 v))) (lambda (v) (list (+ 4 v))))
+#+end_src
+
+** Default values
+
+Often, we want symbols to have a default value for every instance of an
+interface made from that class.
+
+#+begin_src gerbil
+  (define-interface-class (ListMonad Monad) 
+    ((result list)
+     (bind (lambda (v f) (append-map f v)))))
+
+  (def ListMonad (make-interface 'ListMonad))
+#+end_src
+
+Does it pass the test?
+
+#+begin_src gerbil
+  (test-monad-laws ListMonad 1 (list 2) (lambda (v) (list (+ 3 v))) (lambda (v) (list (+ 4 v))))
+  ;; => #t
+#+end_src
+
+** Inline Values
+
+Not every symbol is just a slot reference. What if they rely on other things in
+the interface? What about themselves recursively?
+
 
 * The Symbol Bindings :: ~with-interface~
 
@@ -148,30 +206,43 @@ If we're passed a symbol, use symbol::interface. the ~:~ macro does so automagic
 
 #+NAME: define-interface-class
 #+begin_src gerbil 
-  (defsyntax (define-interface-class stx)
-   (def (description-form->description form)
-     (match form
-       (symbol ['quote symbol])
-       ([name value] ['list ['quote name] value])
-       ([[name . args] . value] ['quote name])
-       ([name keyword . args] ['list ['quote name] keyword . args])))
+    (defsyntax (define-interface-class stx)
+     (def (description-form->description form)
+       (match form
 
-    (syntax-case stx ()
-      ((macro (interface supers ...) descriptions . args)
-       (with-syntax ((ds (cons 'list (map description-form->description
-                                          (syntax->datum  #'descriptions))))
-                     (name (datum->syntax #'macro (string->symbol
-                                                   (string-append (symbol->string (syntax->datum #'interface))
-                                                                  "::interface"))))
-                     (super-interfaces (cons 'list (map (lambda (s)
-                                                          (string->symbol
-                                                           (string-append (symbol->string s) "::interface")))
-                                                        (syntax->datum #'(supers ...))))))
+         ([name value] ['list ['quote name] value])
+         ([[name . args] . value] ['quote name])
+         ([name keyword . args] ['list ['quote name] keyword . args])
+         (symbol symbol)))
+     (def (singleton? args)
+       (let* (name (member instance: args))
+            (if name (cadr name) #f))) 
 
-         #'(begin (define name (make-interface-class 'interface super-interfaces ds))
-                  'name)))
-      ((macro class descriptions)
-       #'(macro (class) descriptions))))
+      (syntax-case stx ()
+        ((macro (interface supers ...) descriptions args ...)
+         (let (instance (singleton? (syntax->datum #'(args ...))))
+         (with-syntax ((ds (datum->syntax #'macro (cons 'list (map description-form->description
+                                            (syntax->datum  #'descriptions)))))
+                       (name (datum->syntax #'macro (string->symbol
+                                                     (string-append (symbol->string (syntax->datum #'interface))
+                                                                    "::interface"))))
+                       (super-interfaces (datum->syntax
+                                             #'macro (cons 'list (map (lambda (s)
+                                                                        (string->symbol
+                                                                         (string-append (symbol->string s) "::interface")))
+                                                                      (syntax->datum #'(supers ...))))))
+                       (defi (datum->syntax #'macro (when instance
+                                                      `(def ,(if (eq? instance #t)
+                                                               (syntax->datum #'interface)
+                                                               instance)
+                                                         (make-interface ',(syntax->datum #'interface)))))))
+
+
+           #'(begin (define name (make-interface-class 'interface super-interfaces ds))
+                    defi
+                    'name))))
+        ((macro class descriptions args ...)
+         #'(macro (class) descriptions args ...))))
 #+end_src
 
 ** ~make-interface-class~, where it all comes together.
@@ -290,11 +361,11 @@ syntax, how we describe them declares what type of symbol they are.
          (let* ((isym (car syms))
                 (sym (interface-symbol-name isym))
                 (key (symbol->keyword sym)))
-           (if (and (interface-slot? isym)
+           (when (and (interface-slot? isym)
                     (not (eqv? absent-obj (interface-slot-value isym)))
                     (not (member key args)))
-             (set! args (append [key (interface-slot-value isym)] args))
-             (unless (null? (cdr syms)) (add-args (cdr syms))))))
+             (set! args (append [key (interface-slot-value isym)] args))) 
+             (unless (null? (cdr syms)) (add-args (cdr syms)))))
        (add-args)
        (apply call-next-method klass self ':init! args))))
 #+end_src
@@ -318,7 +389,7 @@ syntax, how we describe them declares what type of symbol they are.
    istructs-and-classes
    :std/iter :std/sugar :std/generic 
    (for-syntax :std/misc/rtd)) 
-  (export with-interface define-interface-class make-interface make-interface-class)
+  (export with-interface define-interface-class make-interface make-interface-class interface-slot interface-slot-value)
 
 
     <<description->interface-symbol>>

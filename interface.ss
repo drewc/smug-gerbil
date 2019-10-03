@@ -26,7 +26,7 @@
  istructs-and-classes
  :std/iter :std/sugar :std/generic 
  (for-syntax :std/misc/rtd)) 
-(export with-interface define-interface-class make-interface make-interface-class)
+(export with-interface define-interface-class make-interface make-interface-class interface-slot interface-slot-value)
 
 
   (def (description->interface-symbol description)
@@ -56,11 +56,11 @@
          (let* ((isym (car syms))
                 (sym (interface-symbol-name isym))
                 (key (symbol->keyword sym)))
-           (if (and (interface-slot? isym)
+           (when (and (interface-slot? isym)
                     (not (eqv? absent-obj (interface-slot-value isym)))
                     (not (member key args)))
-             (set! args (append [key (interface-slot-value isym)] args))
-             (unless (null? (cdr syms)) (add-args (cdr syms))))))
+             (set! args (append [key (interface-slot-value isym)] args))) 
+             (unless (null? (cdr syms)) (add-args (cdr syms)))))
        (add-args)
        (apply call-next-method klass self ':init! args))))
   (def (make-interface-class name supers descriptions)
@@ -89,27 +89,40 @@
   (defsyntax (define-interface-class stx)
    (def (description-form->description form)
      (match form
-       (symbol ['quote symbol])
+  
        ([name value] ['list ['quote name] value])
        ([[name . args] . value] ['quote name])
-       ([name keyword . args] ['list ['quote name] keyword . args])))
+       ([name keyword . args] ['list ['quote name] keyword . args])
+       (symbol symbol)))
+   (def (singleton? args)
+     (let* (name (member instance: args))
+          (if name (cadr name) #f))) 
   
     (syntax-case stx ()
-      ((macro (interface supers ...) descriptions . args)
-       (with-syntax ((ds (cons 'list (map description-form->description
-                                          (syntax->datum  #'descriptions))))
+      ((macro (interface supers ...) descriptions args ...)
+       (let (instance (singleton? (syntax->datum #'(args ...))))
+       (with-syntax ((ds (datum->syntax #'macro (cons 'list (map description-form->description
+                                          (syntax->datum  #'descriptions)))))
                      (name (datum->syntax #'macro (string->symbol
                                                    (string-append (symbol->string (syntax->datum #'interface))
                                                                   "::interface"))))
-                     (super-interfaces (cons 'list (map (lambda (s)
-                                                          (string->symbol
-                                                           (string-append (symbol->string s) "::interface")))
-                                                        (syntax->datum #'(supers ...))))))
+                     (super-interfaces (datum->syntax
+                                           #'macro (cons 'list (map (lambda (s)
+                                                                      (string->symbol
+                                                                       (string-append (symbol->string s) "::interface")))
+                                                                    (syntax->datum #'(supers ...))))))
+                     (defi (datum->syntax #'macro (when instance
+                                                    `(def ,(if (eq? instance #t)
+                                                             (syntax->datum #'interface)
+                                                             instance)
+                                                       (make-interface ',(syntax->datum #'interface)))))))
+  
   
          #'(begin (define name (make-interface-class 'interface super-interfaces ds))
-                  'name)))
-      ((macro class descriptions)
-       #'(macro (class) descriptions))))
+                  defi
+                  'name))))
+      ((macro class descriptions args ...)
+       #'(macro (class) descriptions args ...))))
 
   (def (make-interface interface . args)
     (apply make-class-instance
