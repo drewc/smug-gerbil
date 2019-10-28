@@ -4,5 +4,6 @@
 (import :std/build-script)
 
 (defbuild-script
-  '("interface" "monparsing"))
+  '("primitive" "simple" "prefix" "smug"))
+
 

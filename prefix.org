@@ -1,0 +1,160 @@
+#+TITLE: smug:prefix 
+
+Everything that emulates another basic thing is prefixed with ~smug:~.
+
+* map 
+
+Many is a good combinator, but must of the time we only want the full list.
+Passing ~+++~ every time became a PITA. ~smug:map~ does just that.
+
+#+NAME: smug:map
+#+begin_src gerbil
+  (def (smug:map p (using +++)) (many p +++))
+#+end_src
+
+
+* or/and/not
+
+For example, ~smug:or~. In the primitive parser, it's a function known as ~+++~.
+In my head, it says "run this parser or this parser". We expand on that.
+
+#+name: smug:or 
+#+begin_src gerbil
+  (def (smug:or p . ps) (+++ p (if (null? ps) (fail) (apply smug:or ps))))
+#+end_src
+
+Now that we have ~or~, ~smug:and~ comes next.
+
+#+name: smug:and
+#+begin_src gerbil
+  (def (smug:and p . ps)
+    (bind p (lambda (v) (if (null? ps) (return v) (apply smug:and ps)))))
+#+end_src
+
+Now ~smug:not~. Because parsers are functions, we can mutate things in one and
+return from another.
+
+#+name: smug:not
+#+begin_src gerbil
+  (def (smug:not p)
+    (bind (return #t)
+          (lambda (not)
+            (+++ (bind p (lambda _ (set! not #f) (fail)))
+                 (bind (return #!void) (lambda _ (if not (return not) (fail))))))))
+#+end_src
+
+* peek-char 
+There are times when we want to see the next character without consuming it.
+#+name: smug:peek-char
+#+begin_src gerbil
+  (def (smug:peek-char (p (item)))
+    (def EOF (bind (smug:not (item)) (lambda _ (return #!eof))))
+    (bind (return #!void)
+          (lambda (peek) (smug:or (bind (+++ p EOF)
+                                   (lambda (c) (set! peek c) (fail)))
+                             (bind (return #!void)
+                                   (lambda _ (if (void? peek)
+                                          (fail)
+                                          (return peek))))))))
+#+end_src
+
+* begin0
+#+NAME: smug:begin0
+#+begin_src gerbil
+  (def (smug:begin0 parser . parsers)
+    (smug:let* ((result parser)
+                (_ (if (null? parsers) (return result) (apply smug:and parsers))))
+      (return result)))
+
+#+end_src
+
+* Strings 
+  :PROPERTIES:
+  :CUSTOM_ID: strings
+  :END:
+
+
+#+begin_src gerbil
+  (def (smug:char=? char (pred char=?))
+    (satisfies (cut pred <> char)))
+
+  (def (smug:read-line eof-fail?: (eof-fail? #f)
+                       map: (f list->string)
+                       include-newline?: (nl? #f))
+    (smug:let*
+     ((chars (many (satisfies (lambda (c) (not (char=? #\newline c)))) +++))
+      (nl (smug:or (item) (return #!eof))))
+     ;; If there are no chars and we are EOF, we fail
+     ;; If EOF does not define a line, and we're EOF, we fail
+     (if (and (eof-object? nl) (or (null? chars) eof-fail?))
+       (fail)
+       (return (f (if (and nl? (not (eof-object? nl)))
+                    (if (null? chars)
+                      [nl]
+                      (let ((l (last-pair chars)))
+                        (set! (cdr l) [nl])
+                        chars))
+                    chars))))))
+
+  (def (smug:string=? str start: (start 0) end: (end (string-length str))
+                     predicate: (p? char=?)
+                     return-parsed?: (r? #f))
+   (if (= start end)
+      (return [])
+      (smug:let* ((x (satisfies (cut p? (string-ref str start) <>)))
+                  (xs (smug:string=? str start: (+ 1 start) end: end
+                                    predicate: p?
+                                    return-parsed?: r?)))
+                 (return (if r? (cons x xs) str)))))
+
+  (def (smug:string-ci=? str . args)
+    (apply smug:string=? str predicate: char-ci=? args))
+#+end_src
+
+* prefix.ss
+#+begin_src gerbil :tangle "prefix.ss" :noweb yes
+  (import :drewc/smug/primitive :drewc/smug/simple)
+  (export #t)
+
+  <<smug:map>>
+
+  <<smug:or>>
+
+  <<smug:and>>
+
+  <<smug:not>>
+
+  <<smug:peek-char>>
+
+  <<smug:begin0>>
+
+  (def (smug:char=? char (pred char=?))
+    (satisfies (cut pred <> char)))
+
+  (def (smug:read-line eof-fail?: (eof-fail? #f)
+                       map: (f list->string))
+    (smug:let*
+     ((chars (many (satisfies (lambda (c) (not (char=? #\newline c)))) +++))
+      (nl (smug:or (item) (return #!eof))))
+     ;; If there are no chars and we are EOF, we fail
+     ;; If EOF does not define a line, and we're EOF, we fail
+     (if (and (eof-object? nl) (or (null? chars) eof-fail?))
+       (fail)
+       (return (f chars)))))
+
+  (def (smug:string=? str start: (start 0) end: (end (string-length str))
+                     predicate: (p? char=?)
+                     return-parsed?: (r? #f))
+   (if (= start end)
+      (return [])
+      (smug:let* ((x (satisfies (cut p? (string-ref str start) <>)))
+                  (xs (smug:string=? str start: (+ 1 start) end: end
+                                    predicate: p?
+                                    return-parsed?: r?)))
+                 (return (if r? (cons x xs) str)))))
+
+  (def (smug:string-ci=? str . args)
+    (apply smug:string=? str predicate: char-ci=? args))
+
+
+#+end_src

@@ -1,0 +1,36 @@
+#+TITLE: Smug
+
+
+#+begin_src gerbil :tangle "smug.ss"
+  package: drewc
+
+  (import :drewc/smug/primitive :drewc/smug/simple :drewc/smug/prefix)
+
+  (export (import: :drewc/smug/primitive)
+          (import: :drewc/smug/simple)
+          (import: :drewc/smug/prefix))
+#+end_src
+
+
+*** ~++~ and ~+++~ Adding simultaneous parser branches. 
+    :PROPERTIES:
+    :CUSTOM_ID: +++
+    :END:
+
+There are two primitives for adding parsers together to run in unison, ~++~ and
+~+++~. Essentially, ~++~ is non-deterministic and ~+++~ is determined.
+
+The easy way to explain is, of course, an example.
+
+#+begin_src gerbil
+  ((++ (item) (return [])) "asd") ;; => ((#\a 1 . "asd") (() . "asd"))
+  ((+++ (item) (return [])) "asd") ;; => ((#\a 1 . "asd"))
+  ((+++ (fail) (return [])) "asd") ;; => ((() . "asd"))
+#+end_src
+
+ ~++~ always runs the second parser, whereas ~+++~ only runs if the first one
+fails.
+
+~many~ takes a plus combinator as its second argument, which allows us to only
+have the largest block returned.
+

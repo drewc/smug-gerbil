@@ -1,0 +1,175 @@
+#+TITLE: Smug Parser  
+
+#+begin_src gerbil :tangle "parser.ss"
+  package: drewc
+
+  (import :drewc/smug/primitive :drewc/smug/simple :drewc/smug/prefix)
+
+  (export (import: :drewc/smug/primitive)
+          (import: :drewc/smug/simple)
+          (import: :drewc/smug/prefix))
+#+end_src
+
+
+*** ~++~ and ~+++~ Adding simultaneous parser branches. 
+    :PROPERTIES:
+    :CUSTOM_ID: +++
+    :END:
+
+There are two primitives for adding parsers together to run in unison, ~++~ and
+~+++~. Essentially, ~++~ is non-deterministic and ~+++~ is determined.
+
+The easy way to explain is, of course, an example.
+
+#+begin_src gerbil
+  ((++ (item) (return [])) "asd") ;; => ((#\a 1 . "asd") (() . "asd"))
+  ((+++ (item) (return [])) "asd") ;; => ((#\a 1 . "asd"))
+  ((+++ (fail) (return [])) "asd") ;; => ((() . "asd"))
+#+end_src
+
+ ~++~ always runs the second parser, whereas ~+++~ only runs if the first one
+fails.
+
+~many~ takes a plus combinator as its second argument, which allows us to only
+have the largest block returned.
+
+
+
+* Primitive 
+
+#+begin_src gerbil :tangle "primitive.ss"
+  (import :std/sugar :std/srfi/1)
+  (export #t)
+
+  ;; return v = \inp -> [(v,inp)]
+  (def (return v) (lambda (inp) [[v . inp]]))
+
+  ;; fail = \inp -> []
+  (def (fail) (lambda _ []))
+
+  (defsyntax (:p stx)
+    (syntax-case stx ()
+      ((macro fn)
+       #'(let (proc fn)
+           (cond ((procedure? proc) proc)
+                 ((char? proc)
+                  (bind (item) (lambda (x) (if (char=? x proc)
+                                        (return proc)
+                                        (fail)))))
+                 ((string? proc)
+                  (let str ((xs (string->list proc)))
+                    (if (null? xs)
+                      (return proc)
+                      (bind (item) (lambda (x) (if (char=? x (car xs))
+                                            (str (cdr xs))
+                                            (fail))))))))))))
+
+
+  ;; p ‘bind‘ f = \inp -> concat [f v inp’ | (v,inp’) <- p inp]
+  (def (bind p f) (lambda (inp) (append-map (cut match <> ([v . inp*] ((f v) inp*))) ((:p p) inp))))
+
+  ;;  item = \inp -> case inp of
+  ;;              [] -> []
+  ;;              (x:xs) -> [(x,xs)]
+
+  (def (item)
+    (lambda (input)
+      (let (inp (if (pair? input)
+                  input
+                  (cons 0 input)))
+        (try
+         (let ((x (string-ref (cdr inp) (car inp)))
+               (xs (cons (+ 1 (car inp)) (cdr inp))))
+           [[x . xs]])
+         (catch _ [])))))
+
+  (def (point) (lambda (inp) ((return (if (pair? inp) (car inp) 0)) inp)))
+
+
+
+  (def (run parser inp) (let (PV ((:p parser) inp)) (if (null? PV) #!void (caar PV))))
+
+  ;; p ++ q = \inp -> (p inp ++ q inp)
+
+  (def (++ p q) (lambda (inp) (append ((:p p) inp) ((:p q) inp))))
+
+  ;; first p = \inp -> case p inp of
+  ;;                    [] -> []
+  ;;                    (x:xs) -> [x]
+
+  (def (smug:first parser) (lambda (input) (match ((:p parser) input)
+                                             ([] [])
+                                             ([x . xs] [x]))))
+
+  ;; p +++ q = first (p ++ q)
+  ;; We are not lazy, so have to specify.
+  (def (+++ p q) (lambda (inp) (match ((:p p) inp) ([] ((:p q) inp)) (xs xs))))
+
+  (defsyntax (smug:let* stx)
+    (def (bind-form id value body)
+      `(bind ,value (lambda (,id) ,@body)))
+    (syntax-case stx (values)
+      ((macro bind: (values . vs) :to v body ...)
+       (let* ((id (gensym)) (MV (syntax->datum #'v))
+              (MF `(lambda (,id) (let ((values . ,(syntax->datum #'vs)) ,id)
+                              ,@(syntax->datum #'(body ...))))))
+         (with-syntax ((bf (datum->syntax #'macro ['bind MV MF])))
+           #'bf)))
+      ((macro bind: id to: value body ...)
+       (with-syntax ((bind-form (datum->syntax
+                                    #'macro
+                                  `(bind ,(syntax->datum #'value)
+                                          (lambda (,(syntax->datum #'id))
+                                            ,@(syntax->datum #'(body ...)))))))
+         #'bind-form))
+      ((macro ((id value) rest ...) body ...)
+       #'(macro bind: id to: value
+                (macro (rest ...) body ...)))
+      ((macro _ body ...)
+       #'(let (ret (begin body ...))
+           (if (procedure? ret) ret (return ret))))))
+#+end_src
+
+* Simple 
+
+#+begin_src gerbil :tangle "simple.ss"
+  (import :drewc/smug/parser/primitive
+          (for-syntax :drewc/smug/parser/primitive)
+          (only-in :std/srfi/13 string-null?))
+  (export #t)
+
+
+  ;; sat p = item ‘bind‘ \x -> if p x then return x else fail
+  (def (sat predicate (p (item)))
+      (bind p (lambda (x) (if (predicate x) (return x) (fail)))))
+
+  (def (satisfies predicate item: (item item))
+    (bind (item) (lambda (x) (if (predicate x) (return x) (fail)))))
+
+  (def (skip p) (+++ (bind p (lambda _ (skip p))) (return #!void)))
+
+  (def (liftP function . args) (cut bind <> (lambda (v) (return (apply function v args)))))
+
+  ;; many p = [x:xs | x <- p, xs <- many p] ++ [[]]
+
+  (def (many parser (plus +++))
+    (plus 
+          (smug:let* ((x parser)
+                      (xs (many parser plus)))
+                     (return [x . xs]))
+          (return [])))
+
+  (def (at-least n parser (plus +++))
+    (plus (smug:let* ((x parser)
+                      (xs (at-least (- n 1) parser plus)))
+           (return [x . xs]))
+          (if (> n 0) (fail) (return []))))
+
+
+  ;; sepby1:: Parser a -> Parser b -> Parser [a]
+  ;; p ‘sepby1‘ sep = [x:xs | x <- p , xs <- many [y | _ <- sep , y <- p]]
+
+  (def (sepby1 p sep (plus +++))
+    (smug:let* ((x p) (xs (many (smug:let* ((_ sep) (y p)) (return y)) plus))) (return [x . xs])))
+              
+#+end_src

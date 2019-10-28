@@ -1,0 +1,1033 @@
+#+TITLE: Smug Gerbil Tutorial
+
+*Smug Gerbil* is a literate program. A lot of the source code is contained in
+ [[https://orgmode.org/][Org Mode]] syntax files (~.org~), and is tangled to files that the compiler likes.
+
+Before they are tangled, they need to be parsed. This is where it goes down,
+with a tutorial that lays it out.
+
+#+NAME: import for tangle
+#+begin_src gerbil
+  (import :drewc/smug :std/srfi/13 :std/srfi/1 :std/iter)
+#+end_src
+* Introduction 
+
+  Smug is a library for parsing text based on simplicity. Using a simple
+  technique from the functional programming camp, smug makes it simple to create
+  quick extensible recursive descent parsers without funky syntax or
+  impenetrable macrology.
+
+** Features
+
+  - parsers are first class values written in basic scheme 
+  - non-deterministic infinite look-ahead  
+  - easy to learn, easy to use
+  - extensible input protocol : parse strings, streams, lists etc
+  - in-depth tutorial : no previous experience required!
+  
+** Example
+
+#+NAME: CODE-BLOCK-PLIST
+#+begin_src gerbil :noweb yes
+  (def <code-block-plist>
+      <<code-block-parser>>)
+#+end_src
+
+
+* Code Blocks 
+
+*Org Mode* has [[https://orgmode.org/manual/Working-with-source-code.html][‘src’ code blocks]]. Essentially, anything between the between
+the ~#+begin_src~ and ~#+end_src~ keywords is source code.
+
+#+begin_src org
+  ,#+begin_src gerbil :noweb yes :tangle "/tmp/gerbil.ss"
+  (def (foobar) 
+    ;; This is literate! 
+   <<Where does this come from?>>)
+  ,#+end_src
+#+end_src
+
+They can also start with a name, which also may answer the /<<question>>/.
+
+#+begin_src org
+  ,#+NAME: Where does this come from?
+  ,#+begin_src gerbil
+  (displayln "This is literate!")
+  ,#+end_src
+#+end_src
+
+Finally, they can be [[https://en.wikipedia.org/wiki/Literate_programming#Example][tangled]] in [[https://en.wikipedia.org/wiki/Noweb][noweb]] style to produce a source file.
+
+#+begin_src shell :output value
+  cat /tmp/gerbil.ss 
+  # =>
+  # (def (foobar) 
+  #   ;; This is literate! 
+  #  (displayln "This is literate!"))
+#+end_src
+
+** ~<ws>~, our first combinator 
+
+A block start-or-end tag can optionally start with white space, but not a
+newline. We'll define a predicate and a parser combinator using it.
+
+#+name: WS 
+#+begin_src gerbil
+(def <ws> (skip (satisfies (lambda (c) (and (char-whitespace? c) (not (char=? c #\newline)))))))
+#+end_src
+
+That uses two basic parsers, aka combinators: ~skip~ and ~satisfies~. ~skip~ is
+very simple, it just optionally skips over things parsed by that parser.
+
+*** ~satisfies~ a predicate 
+    :PROPERTIES:
+    :CUSTOM_ID: satisfies
+    :END:
+
+ By default, ~satisfies~ takes a predicate which looks a the next ~item~. Like our ~<ws>~. 
+
+#+begin_src gerbil
+  (let* ((<ws> (many (satisfies char-whitespace?)))
+         (p (bind <ws> (lambda (ws) (if (< (length ws) 2)
+                               (fail)
+                               (return ws))))))
+    (p " 1") ;; => ()
+    (p "   4") 
+    ;; => (((#\space #\space #\space) 3 . "   4") ((#\space #\space) 2 . "   4"))
+    #t)
+#+end_src
+
+The ~bind~, ~return~, ~fail~ and ~many~ parsers will be explained. For now, just
+assume they interact with the Parser Type.
+
+**** The Parser Type.
+
+Notice the return type of parsers? That's a list of cons cells which have a
+thing in their car and a string in the cdr. Welcome to parsers.
+
+#+begin_quote
+    A Parser for Things
+    is a function from Strings
+    to Lists of Pairs
+    of Things and Strings!
+
+ -- [[https://willamette.edu/~fruehr/haskell/seuss.html][Fritz Ruehr, Willamette University]]
+#+end_quote
+
+A ~Parser~ is a function which takes a ~String~ and returns a ~Parser
+Value~, which is a list of pairs of things and "Strings".
+
+ By default, rather than a string, our pairs are things and a pair of ~(position
+. string)~. That allows fast parsing without creating a new string every time.
+
+#+begin_src gerbil
+  (def (item)
+    (lambda (inp)
+      (let (inp (if (pair? inp) inp (cons 0 inp)))
+          (try
+           (let ((x (string-ref (cdr inp) (car inp)))
+                 (xs (cons (+ 1 (car inp)) (cdr inp))))
+             [[x . xs]])
+           (catch _ [])))))
+#+end_src
+
+Also, note that it has many pairs. That's because by default ~smug~ is
+non-deterministic. That allows the next parser to run every item, and lets us
+create a parser in that fashion.
+
+
+** ~<end-keyword>~, we peek ahead.
+
+#+name: END-KEYWORD 
+#+begin_src gerbil
+  (def <end-keyword> (smug:peek-char (smug:or (satisfies char-whitespace?) (smug:not (item)))))
+#+end_src
+In Org Mode, any line that starts with "#+" is an in-buffer  keyword. To end the keyword
+name definition could be a space, a newline, or the end of file. We don't want
+to consume it, just know it's there.
+
+*** ~item~, what makes this a parser.
+
+If "A Parser for Things is a function from Strings to Lists of Pairs of Things
+and Strings", we need some way to access the characters of the string, in order.
+
+Another version could create a new string every time.
+
+#+begin_src gerbil
+  (def (item) (lambda (inp) (if (string-null? inp) [] [(cons (string-ref inp 0) (string-drop inp 1))])))
+#+end_src
+
+It consumes it. If we want to look-ahead, we need to peek.
+
+*** ~smug:peek-char~
+
+Peeking is looking ahead without consuming. By default it runs ~item~.
+
+#+begin_src gerbil
+  ((smug:peek-char) "asd") ;; => ((a . "asd"))
+#+end_src
+
+But, if we give it a parser, it peeks with that, and fails if it does not pass.
+
+#+begin_src gerbil 
+  ((smug:peek-char (satisfies char-whitespace?)) "ASD") ;; => ()
+  ((smug:peek-char (satisfies char-upper-case?)) ;; "ASD") => ((#\A . "ASD"))
+#+end_src
+
+*** ~smug:or~: this or that ...
+
+Or is a pretty standard logical combinator. The ~[that ...]~ parser(s) are only
+run if the ~this~ ~fail~'s. 
+
+*** ~smug:not~, exactly what it says
+
+This parser does not fail if the parser fails. If the parser succeeds, it fails.
+In this case we use it to check for EOF. If there is no item, we're at the end.
+
+It does not consume any characters.
+
+** ~(<keyword> name)~
+
+To parse a "#+" keyword, we append that, and use ~smug:string-ci=?~. 
+
+The entire line after a #+KEYWORD is the known as the ~HEADER~.
+
+#+name: KEYWORD
+#+begin_src gerbil
+  (def (<keyword> name)
+    (def <header> (smug:or (smug:and <ws> (smug:read-line)) (return "")))
+    (smug:and <ws> (smug:string-ci=? (string-append "#+" name)) <end-keyword> <header>))
+#+end_src
+
+*** ~smug:read-line~, ~smug:string-ci=?~, string things.
+
+There are lots of [[file:prefix.org::#strings][string parsers]] that start with a prefix and are similar to
+what they emulate.
+
+*** ~smug:and~, run them all return the last
+
+ It's a simple combinator but quite useful.
+
+** ~<name>~ for #+NAME: <name>
+
+Pretty simple. Since the ~<keyword>~ returns the "args", and that is the name,
+case closed.
+
+#+NAME: NAME
+#+begin_src gerbil
+  (def <name> (smug:or (bind (<keyword> "name:") (lambda (l) (return (string-trim-right l)))) (return #f)))
+#+end_src
+
+** ~<lines>~, functional goodness
+
+This recursively calls itself and introduces a macro on top of ~bind~
+
+If the keyword #+end_src appears to start the line, the block is finished.
+Otherwise, read the line and construct a list of that line and the rest of the
+lines as stated.
+#+NAME: LINES
+#+begin_src gerbil
+  (def <lines> (smug:or (smug:and (<keyword> "end_src") (return []))
+                      (smug:let* ((x (smug:read-line))
+                                  (xs <lines>))
+                        (return (cons x xs)))))
+#+end_src
+
+*** ~return~, to lists of pairs of strings and things. 
+
+Return is what makes a value into a Parser.
+
+#+begin_src gerbil
+  (def (return v) (lambda (inp) [[v . inp]]))
+  ((return "yay!") "String") ;; => (("yay!" . "String"))
+#+end_src
+
+*** ~let*~, a veneer on ~bind~
+
+If "A Parser for Things is a function from Strings to Lists of Pairs of Things
+and Strings", and we care about the Things as that's what ~return~.
+
+~bind~ is a function which takes a Parser, and calls a function with the result
+of that parser. That function itself should return a parser, and the cycle continues. 
+
+
+#+begin_src gerbil
+  (def thecons (bind (item) (lambda (x) (bind (item) (lambda (y) (return (cons x y)))))))
+
+  (thecons "ad") ;; => (((#\a . #\d) 2 . "ad"))
+#+end_src
+
+~smug:let*~ is just a small layer over that. 
+
+#+begin_src gerbil
+  (def thecons (smug:let* ((x (item)) (y (item))) (return (cons x y))))
+
+  (thecons "ad") ;; => (((#\a . #\d) 2 . "ad"))
+#+end_src
+
+
+** ~<code-block-plist>~, putting it all together
+ 
+Simple! We use the existing parsers.
+
+#+NAME: code-block-parser
+#+begin_src gerbil
+  (smug:let* ((name <name>) (header (<keyword> "begin_src")) (lines <lines>))
+    (return [name: name header: header lines: lines]))
+#+end_src
+
+With that, a Parser [[CODE-BLOCK-PLIST][<code-block-plist>]] is defined. 
+
+*** ~run~, a simple function
+
+Because our parser is a function which returns a ~Parser Value~, a list of pairs
+of things and Strings, we often just want the first thing returned. 
+
+Run does just that.
+
+#+begin_src gerbil
+(def (run parser inp) (let (PV (parser inp)) (if (null? PV) #!void (caar PV))))
+#+end_src
+
+#+begin_src gerbil
+  (run <code-block> "#+NAME: Where does this come from?\n#+begin_src gerbil\n(displayln \")This is literate!\")\n#+end_src")
+  ;; => (name: "Where does this come from?" header: "gerbil" lines: ("(displayln \")This is literate!\")"))
+#+end_src
+
+* Structure 
+
+A source code block conforms to this structure:
+
+#+begin_src org
+  ,#+NAME: <name>
+  ,#+BEGIN_SRC <language> <switches> <header arguments>
+    <body>
+  ,#+END_SRC
+#+end_src
+
+Which becomes a structure.
+
+#+name: code-block-struct
+#+begin_src gerbil
+  (defstruct code-block
+    (name language switches header-arguments body))
+#+end_src
+
+** <language>
+
+~<language>~ is a string that comes before whitespace.
+
+#+name: LANGUAGE
+#+begin_src gerbil
+  (def <language>
+    ((liftP list->string) (smug:map (satisfies-not char-whitespace?))))
+#+end_src
+
+We use 5 new Parsers. 
+
+*** ~liftP~ : make a function a parser. 
+
+  ~LiftP~ takes a function and replaces it with a function that takes a Parser
+  and returns a Parser Value.
+
+*** ~satisfies-not~ is just sugar
+
+Parsing is supposed to be short-winded.
+
+ #+begin_src gerbil
+(def (satisfies-not p . args) (apply satisfies (lambda (x) (not (p x))) args))
+ #+end_src
+
+*** ~smug:map~, aka ~many~: a list of things.
+
+With ~many~, the results from each application of the parser` are returned in a
+list. The most parser-esqe primitive combinator is ~item~, which simply returns
+the next character.
+
+The Parser ~(many (item))~ returns a list of characters, for every item.
+
+#+begin_src gerbil
+  ((many (item)) "asd")
+  ;; => (((#\a #\s #\d) 3 . "asd") ((#\a #\s) 2 . "asd") ((#\a) 1 . "asd") (() . "asd"))
+#+end_src
+
+On the other hand, ~smug:map~ just returns the full list.
+
+
+#+begin_src gerbil
+  ((smug:map (item)) "asd") ;; => (((#\a #\s #\d) 3 . "asd"))
+#+end_src
+It all depends on what we want, and relates to efficiency as much as
+determinism. And, they are non-identical twins.
+
+
+#+begin_src gerbil
+  ((smug:map (item)) "asd") ;; => (((#\a #\s #\d) 3 . "asd"))
+  ((many (item) +++) "asd") ;; => (((#\a #\s #\d) 3 . "asd"))
+  ((smug:first (many (item))) "asd") ;; => (((#\a #\s #\d) 3 . "asd"))
+#+end_src
+
+*** ~smug:first~
+
+Often we do not care for the list in full. Because we are non-deterministic,
+that could mean running the next parser every time. If we only need the first,
+we can do so.
+
+#+begin_src gerbil
+  ((smug:first (many (item))) "asd") ;; => (((#\a #\s #\d) 3 . "asd"))
+#+end_src
+
+But, that does form all the results and take the first. We can do better. ~+++~
+to the rescue.
+
+*** ~++~ and ~+++~, all or one?
+
+There are two different ways to combine parsers. By default, ~many~ uses ~++~,
+which just appends the two results.
+
+#+begin_src gerbil
+  (def (++ p q) (lambda (inp) (append (p inp) (q inp))))
+#+end_src
+
+But a lot of the time, we only care about the first. While ~smug:first~ exists,
+that still runs all the parsers before choosing the first.
+
+#+begin_src gerbil
+(def (+++ p q) (lambda (inp) (match (p inp) ([] (q inp)) (xs xs))))
+#+end_src
+
+If we pass that to many, we see the difference. It is the same result as using
+~smug:first~, but the rest are not generated, so we do not have to choose.
+
+#+begin_src gerbil
+  ((many (item) +++) "asd")
+  ;; => (((#\a #\s #\d) 3 . "asd"))
+#+end_src
+
+As stated previously, that's all that ~smug:map~ does.
+
+#+begin_src gerbil
+  (def (smug:map p (using +++)) (many p +++))
+#+end_src
+
+Just some sugar on the top.
+
+** <switches>
+
+ Switches. 
+
+  - -n [arg] :: "Both in ‘example’ and in ‘src’ snippets, you can add a ‘-n’ switch
+          [...] ‘-n’ takes an optional numeric argument specifying the starting
+          line number of the block. [...] use a ‘+n’ switch, [...] can also take
+          a numeric argument[fn:ol]"
+
+  - -r :: "You can also add a ‘-r’ switch which removes the labels from the
+          source code[fn:ol]"
+
+  - -i :: "preserve the indentation of a specific code block[fn:ol]"
+-
+  - -l arg :: "If the syntax for the label format conflicts with the language syntax,
+          use a ‘-l’ switch to ch(ange the format, for example :
+          src_org{#+BEGIN_SRC pascal -n -r -l "((%s))"}[fn:ol]"
+
+#+name: SWITCHES
+#+begin_src gerbil
+  (def <switches>
+    (let P ()
+      (def <ws> (skip (satisfies char-whitespace?)))
+
+      (def (<switch> (letter #\n) (arg (return [])))
+        (smug:let* ((_ (smug:and <ws> (smug:char=? #\-) (smug:char=? letter)))
+                    (arg arg))
+          (return (cons (string->symbol (string letter)) (list->string arg)))))
+
+      (def <n> (smug:map (satisfies char-numeric?)))
+      (def <l> (let* ((char #\") (<q> (smug:char=? char))
+                      (<backslash> (smug:and (smug:char=? #\\) (item)))
+                      (<body> (smug:map (smug:or (satisfies-not (cut char=? char <>))
+                                             <backslash>))))
+               (smug:and <ws> <q> (smug:begin0 <body> <q>))))
+
+      (smug:map (smug:or (<switch> #\n <n>) (<switch> #\r) (<switch> #\i) (<switch> #\l <l>)))))
+
+#+end_src
+
+** <header arguments>
+
+"A header argument is specified with an initial colon followed by the argument’s
+name in lowercase.[fn:oha]"
+
+#+NAME: Header Arguments
+#+begin_src gerbil
+  (def <header-arguments>
+    (let P ()
+      (def <header-argument-name>
+        ((liftP (lambda (lst) (string->symbol (list->string lst))))
+         (smug:and (smug:char=? #\:)
+                   (many (satisfies char-lower-case?) +++))))
+
+      (def <header-argument-value>
+        ((liftP list->string) (smug:map (satisfies-not (cut char=? #\: <>)))))
+
+      (def <header-argument>
+           (smug:let* ((name (smug:and (skip (satisfies char-whitespace?))
+                                       <header-argument-name>))
+                       (value (smug:and (skip (satisfies char-whitespace?))
+                                        <header-argument-value>)))
+             (return (cons name (string-trim-right value)))))
+
+         (smug:map <header-argument>)))
+#+end_src
+
+** ~<code-block>~
+
+#+NAME: Code Block
+#+begin_src gerbil
+  (def <code-block>
+    (let P ()
+      (def <L.S.HA>
+        (smug:let* ((lang <language>) (sws <switches>) (has <header-arguments>))
+          (return (list lang sws has))))
+
+      (def (getf name list)
+        (cadr (member name list)))
+
+      (bind <code-block-plist>
+            (lambda (cb)
+              (let ((name (getf name: cb))
+                    (header (getf header: cb))
+                    (body (getf lines: cb)))
+                (match (run <L.S.HA> header)
+                  ([l s has] (return (make-code-block name l s has body)))))))))
+#+end_src
+
+* Tangle 
+
+"When Org tangles code blocks, it expands, merges, and transforms them. Then Org
+recomposes them into one or more separate files, as configured through the
+options. During this tangling process, Org expands variables in the source code,
+and resolves any Noweb style references (see Noweb Reference Syntax)."
+
+First, we'll parse a file, returning only code blocks. If not a code block,
+we'll skip the line.
+
+#+name: read-code-blocks
+#+begin_src gerbil
+  (def (read-code-blocks inp)
+
+    (def <skip-line> (bind (item) (lambda (x) (if (char=? #\newline x) (return #f) <skip-line>))))
+
+    (def <code-block?> (smug:or <code-block> <skip-line>))
+
+    (def String
+      (if (not (input-port? inp)) inp 
+          (list->string (let loop ((c (read-char inp))) 
+                          (if (eof-object? c) [] (cons c (loop (read-char inp))))))))
+
+    (filter identity (run (many <code-block?> +++) String)))
+#+end_src
+
+Now that we have all the code blocks, we can tangle any one that passes a [[*~:tangle~ header
+ arg][~:tangle~ header arg]].
+
+#+begin_src gerbil
+  (def (code-block-tangle
+        cb port: (out (current-output-port))
+        blocks: (cbs []))
+    (def lines (code-block-lines cb cbs))
+    (parameterize ((current-output-port out))
+      (for (l lines) (displayln l))))
+
+  (def (test-tangle-file (fn "~/src/smug-gerbil/tutorial.org"))
+    (def cbs (call-with-input-file fn read-code-blocks))
+    (def tangles (filter code-block-tangle? cbs))
+    (for (tcb tangles)
+      (let (fn (code-block-tangle-filename tcb))
+        (call-with-output-file
+            fn (lambda (port) (code-block-tangle tcb port: port blocks: cbs))))))
+
+
+
+
+#+end_src
+
+** ~:tangle~ header arg
+
+ #+begin_quote
+ The ‘tangle’ header argument specifies if the code block is exported to source file(s).
+
+ ‘yes’ Export the code block to source file. The file name for the source file is
+       derived from the name of the Org file, and the file extension is derived
+       from the source code language identifier. Example: ‘:tangle yes’.
+
+ ‘no’ The default. Do not extract the code in a source code file. Example:
+      ‘:tangle no’.
+
+ FILENAME Export the code block to source file whose file name is derived from
+          any string passed to the ‘tangle’ header argument. Org derives the file
+          name as being relative to the directory of the Org file’s location. [fn:oes]
+ #+end_quote
+
+ #+name: code-block-[tangle?|filename]
+ #+begin_src gerbil
+   (def (code-block-tangle? cb)
+     (let (arg (assoc 'tangle (code-block-header-arguments cb)))
+       (when arg (set! arg (cdr arg)))
+       (if arg (if (string=? "no" arg) #f #t) #f)))
+
+   (def (code-block-tangle-filename cb (default #t))
+     (let (arg (assoc 'tangle (code-block-header-arguments cb)))
+       (when arg (set! arg (cdr arg)))
+       (if arg (if (string=? "yes" arg) default (if (string=? "no" arg) #f arg)) #f)))
+ #+end_src
+
+** Indentation
+
+#+begin_quote
+ - ~org-src-preserve-indentation~ :: Default is [#f]. Source code is indented.
+      This indentation applies during export or tangling, and depending on the
+      context, may alter leading spaces and tabs. When non-[#f], source code is
+      aligned with the leftmost column. No lines are modified during export or
+      tangling, which is very useful for white-space sensitive languages, such
+      as Python.[fn:oes]
+
+#+end_quote
+
+#+NAME: org-src-preserve-indentation
+#+begin_src gerbil -i
+(def org-src-preserve-indentation #f)
+#+end_src
+
+By default, we take out the first number of shared whitespace for every line in
+body. This is so it can be indented in the document it is tangled from, but does
+not indent the source code.
+
+In Switches there is also
+  - -i :: "preserve the indentation of a specific code block[fn:ol]"
+#+NAME: code-block-skip
+#+begin_src gerbil
+  (def (code-block-lines-skip-n cb)
+    (def <ws-count>
+      (bind (smug:map (satisfies char-whitespace?))
+            (lambda (lst) (return (length lst)))))
+
+    (if (or org-src-preserve-indentation
+            (assoc 'i (code-block-switches cb)))
+      0
+      (apply min (map (cut run <ws-count> <>)
+                      (filter (? (not string-null?)) (code-block-body cb))))))
+#+end_src
+
+** Comma for Comment
+
+"[...] lines starting with ‘*’, ‘,*’, ‘#+’ and ‘,#+’ will get a comma
+prepended, to keep them from being interpreted by Org as outline nodes or
+special syntax. These commas will be stripped for editing with C-c ', and also
+for export."
+
+#+NAME: code-block-strip
+#+begin_src gerbil
+  (def (strip-comma line)
+   (if (string-null? line) line 
+    (run (smug:or (smug:and (smug:char=? #\,)
+                   (smug:or (smug:char=? #\*)
+                            (smug:string=? ",*")
+                            (smug:string=? "#+")
+                            (smug:string=? ",#+"))
+                   (return (string-drop line 1)))
+                  (return line))
+         line)))
+#+end_src
+
+
+** Noweb
+
+Org supports named blocks in Noweb style syntax. For Noweb literate programming
+details, see http://www.cs.tufts.edu/~nr/noweb/).
+
+#+begin_src gerbil :tangle /tmp/baz.ss :noweb yes
+;;  <<code-block-name>>
+
+;;<<Nice name with spaces and >> and punctution.>> SUFFIX
+
+;;<<Indent me>>
+#+end_src
+
+Code blocks already have a name set with ~#+NAME:~.
+
+#+name: code-block-name
+#+begin_src text
+  This is actually a comment, but is laid out here as a text source.
+#+end_src
+
+#+name: Nice name with spaces and >> and punctution.
+#+begin_src text
+  This has many lines. 
+  Really, It's to show that.
+  Also, note the indentation does not show up,
+  And we're followed with: 
+#+end_src
+
+#+NAME: Indent me
+#+begin_src gerbil -i
+    ,*Finally*
+    This one, because of the -i switch, is indented as the code block is.
+#+end_src
+
+#+NAME: code-block-noweb
+#+begin_src gerbil
+  (defstruct noweb-ref (name))
+
+  (def <noweb-ref>
+    (let P ()
+      (def (<char> prev)
+        (smug:or (satisfies (? (not (cut char=? #\> <>))))
+                 (smug:begin0 (smug:char=? #\>)
+                              (smug:not (smug:char=? #\>)))
+                 (if (or (char-whitespace? prev)
+                         (char=? #\> prev))
+                   (item)
+                   (fail))))
+
+      (def (<chars> (p #\null))
+        (smug:let* ((x (<char> p))
+                    (xs (smug:or (<chars> x) (return []))))
+                   (return (cons x xs))))
+
+      (smug:and (smug:string=? "<<")
+                (smug:not (satisfies char-whitespace?))
+                (smug:begin0 ((liftP make-noweb-ref)
+                              ((liftP list->string)
+                               (<chars>)))
+                             (smug:string=? ">>")))))
+
+  (defstruct noweb-line (prefix ref postfix))
+
+  (def <noweb-line>
+    (let p ()
+      (def (partition-line lst)
+        (let ((pre (take-while char? lst)))
+          (match (find-tail noweb-ref? lst)
+            ([ref . post]
+             (make-noweb-line (list->string pre) ref (list->string post)))
+            (otherwise (error "Cannot partition noweb line " lst otherwise)))))
+      (bind (smug:map (smug:or <noweb-ref>
+                               (item)))
+            (lambda (l)
+              (if (null? (filter noweb-ref? l))
+                (fail)
+                (return (partition-line l)))))))
+#+end_src
+
+** The ‘noweb’ header 
+
+The ‘noweb’ header argument controls expansion of Noweb syntax references.
+Expansions occur when source code blocks are evaluated, tangled, or exported.[fn:nrs]
+
+  - ‘no’ :: Default. No expansion of Noweb syntax references in the body of the
+           code when evaluating, tangling, or exporting.
+
+  - ‘yes’ :: Expansion of Noweb syntax references in the body of the code block
+             when evaluating, tangling, or exporting.
+
+  - ‘tangle’  :: Expansion of Noweb syntax references in the body of the code
+                 block when tangling. No expansion when evaluating or exporting.
+
+  - ‘no-export’ :: Expansion of Noweb syntax references in the body of the code
+                   block when evaluating or tangling. No expansion when
+                   exporting.
+
+  - ‘strip-export’ :: Expansion of Noweb syntax references in the body of the
+                      code block when expanding prior to evaluating or tangling.
+                      Removes Noweb syntax references when exporting.
+
+  - ‘eval’ :: Expansion of Noweb syntax references in the body of the code block
+              only before evaluating.
+
+We only care about tangling at this point. 
+
+
+#+NAME: expand-noweb-lines 
+#+begin_src gerbil
+  (def (expand-noweb-lines? cb)
+    (def exp? (assoc 'noweb (code-block-header-arguments cb)))
+    (if (not exp?) #f
+        (any (cut equal? (cdr exp?) <>)
+             '("yes" "tangle" "no-export" "strip-export" "eval"))))
+#+end_src
+
+
+
+#+NAME: code-block-lines
+#+begin_src gerbil
+  (def (code-block-lines cb blocks)
+
+    (def n (code-block-lines-skip-n cb))
+
+    (def (line-trim-left l)
+      (if (or (zero? n) (string-null? l)) l (strip-comma (string-drop l n))))
+
+    (def (parser line)
+      (run (smug:or  (if (expand-noweb-lines? cb) <noweb-line> (return line))
+                     (return line))
+           line))
+
+
+    (def lines (map parser (map line-trim-left (code-block-body cb))))
+
+    (if (expand-noweb-lines? cb)
+      (append-map (lambda (l) (if (noweb-line? l)
+                           (expand-noweb-line l blocks)
+                           [l]))
+                  lines)
+      lines))
+
+  (def (noweb-ref-code-block-lines noweb-ref list-of-code-blocks)
+    (append-map (cut code-block-lines <> list-of-code-blocks)
+                (filter (lambda (cb) (equal? (code-block-name cb) (noweb-ref-name noweb-ref)))
+                        list-of-code-blocks)))
+
+  (def (expand-noweb-line noweb-line list-of-code-blocks)
+    (let* ((ref (noweb-line-ref noweb-line))
+          (lines (map (lambda (<>) (string-append (noweb-line-prefix noweb-line) <>))
+                      (noweb-ref-code-block-lines ref list-of-code-blocks))))
+      ;; (when (null? lines)
+      ;;   (displayln "Cannot find lines:" (noweb-ref-name ref)))
+      (begin0 lines
+        (unless (null? lines)
+          (set! (car (last-pair lines))
+            (string-append (last lines) (noweb-line-postfix noweb-line)))))))
+#+end_src
+
+
+* Files 
+
+
+#+begin_src gerbil :noweb yes :tangle tangle.ss
+  <<import for tangle>>
+  (export #t)
+
+  <<WS>> 
+
+  <<END-KEYWORD>>
+
+  <<KEYWORD>>
+
+  <<NAME>>
+
+  <<LINES>>
+
+  <<CODE-BLOCK-PLIST>>
+
+  <<code-block-struct>>
+
+  <<LANGUAGE>>
+
+  <<SWITCHES>>
+
+  <<Header Arguments>>
+
+  <<Code Block>>
+
+  <<read-code-blocks>>
+
+  <<code-block-[tangle?|filename]>> ;| for highlighting a silly thing.
+
+  <<org-src-preserve-indentation>>
+
+  <<code-block-skip>>
+
+  <<code-block-strip>> 
+
+  <<code-block-noweb>>
+
+  <<expand-noweb-lines>>
+
+  <<code-block-lines>>
+
+  
+
+#+end_src
+
+* Footnotes
+
+[fn:nrs] Org Manual - Noweb Reference Syntax
+ https://orgmode.org/manual/Noweb-Reference-Syntax.html#Noweb-Reference-Syntax
+
+[fn:oes] Org Manual - Extracting Source Code
+https://orgmode.org/manual/Extracting-Source-Code.html#Extracting-Source-Code
+
+[fn:oha]  Org Manual - Using Header Arguments 
+https://orgmode.org/manual/Using-Header-Arguments.html#Using-Header-Arguments
+
+[fn:ol] Org Manual - Literal Examples
+https://orgmode.org/manual/Literal-Examples.html#Literal-Examples
+
+[fn:mpc] Monadic parser combinators - Graham Hutton and Erik Meijer. Technical
+Report NOTTCS-TR-96-4, Department of Computer Science, University of
+Nottingham, 1996. web: http://www.cs.nott.ac.uk/~gmh/bib.html#monparsing
+
+*** ~many~: a list of things.
+
+The results from each application of parser are returned in a list. The most
+parser-esqe primitive combinator is ~item~, which simply returns the next
+character.
+
+So, ~(many (item))~ returns a list of characters.
+
+#+begin_src gerbil
+  ((many (item)) "asd")
+  ;; => (((#\a #\s #\d) 3 . "asd") ((#\a #\s) 2 . "asd") ((#\a) 1 . "asd") (() . "asd"))
+#+end_src
+
+[[#satisfies][Skip ahead]] if you want to avoid the details for now.
+
+*** The Parser type.
+Ok, wait, that's not a list of characters. that's a list of cons cells which
+have a list of characters in their car. Welcome to parsers. 
+
+#+begin_quote
+    A Parser for Things
+    is a function from Strings
+    to Lists of Pairs
+    of Things and Strings!
+
+ -- [[https://willamette.edu/~fruehr/haskell/seuss.html][Fritz Ruehr, Willamette University]]
+#+end_quote
+
+A ~Parser~ is a function which takes a ~String~ and returns a ~Parser
+Value~, which is a list of pairs of things and "Strings".
+
+ By default, rather than a string, our pairs are things and a pair of ~(position
+. string)~. That allows fast parsing without creating a new string every time.
+
+Also, note that it has many lists of characters, starting with ~()~. That's
+because by default ~smug~ is non-deterministic. That allows the next parser to
+run every item, and lets us create a parser in that fashion. 
+
+#+begin_src gerbil
+  (def (stop-at char)
+    (bind (many (item))
+          (lambda (xs) (bind (smug:char=? char)
+                        (lambda _ (return xs))))))
+  ((stop-at #\s) "asdf") ;; => (((#\a) 2 . "asdf"))
+#+end_src
+
+
+
+*** TODO 
+
+After
+that comes ~#+[...]~.
+
+#+begin_src gerbil
+    (def (tag-name name)
+     (smug:string-ci=? (string-append "#+" name)))
+#+end_src
+
+That must be followed with a space, a newline, or
+the end of file, but we only want to peek.
+
+#+begin_src gerbil
+  (def (peek-finish)
+    (satisfies (lambda (char)
+                 (or (char-whitespace? char)
+                     (eof-object? char)))
+               item: smug:peek-char))
+#+end_src
+
+And putting that together, we have a tag.
+
+#+begin_src gerbil
+  (def (tag name)
+    (smug:and (many (satisfies char-whitespace?))
+              (tag-name name)
+              (peek-finish)))
+
+
+  (def (block-lines (end "end_src"))
+    (smug:or (bind (tag end) (lambda _ (return [])))
+             (smug:let* ((line (smug:read-line))
+                         (lines (block-lines end)))
+              (return (cons line lines)))))
+
+
+  (def (block (start "begin_src") (end "end_src"))
+    (smug:let* ((_ (tag start))
+                (args (smug:read-line))
+                (lines (block-lines end)))
+      (return [[start: start args]
+               [lines: lines]
+               [end: end]])))
+
+#+end_src
+
+#+begin_src gerbil
+  (def (tag name)
+    (smug:and (many (satisfies char-whitespace?))
+              (tag-name name)
+              (peek-finish)))
+
+
+  (def (block-lines (end "end_src"))
+    (smug:or (bind (tag end) (lambda _ (return [])))
+             (smug:let* ((line (smug:read-line))
+                         (lines (block-lines end)))
+              (return (cons line lines)))))
+
+
+  (def (block (start "begin_src") (end "end_src"))
+    (smug:let* ((_ (tag start))
+                (args (smug:read-line))
+                (lines (block-lines end)))
+      (return [[start: start args]
+               [lines: lines]
+               [end: end]])))
+
+#+end_src
+
+** ~bind/return/fail~: Primitives
+
+The parsers ~bind~, ~return~ and ~fail~ are explained here, but if you are
+skimming through, [[#+++][the next combinator]] does not need them to be understood in
+full.
+iIf a parser takes a string and returns a list of pairs, we'd like to interact with that
+in a normal fashion. That's where these three primitives do their job. 
+
+If we want to return a value, we use ~return~, which returns our value wrapped
+in a parser.
+
+#+begin_src gerbil
+  (def (return v) (lambda (inp) [[v . inp]]))
+
+  ((return "yay!") "String") ;; => (("yay!" . "String"))
+#+end_src
+
+If we fail in some way, we simply return the empty list.
+
+#+begin_src gerbil
+  (def (fail) (lambda _ []))
+
+  ((fail) "String") ;; => ()
+#+end_src
+
+
+Finally, ~bind~ puts it all together. Bind takes a ~Parser~, runs it, then calls
+a function with the result. That function is expected to return a parser.
+
+Thus, ~bind~ is the first parser combinator.
+
+#+begin_src gerbil
+(def (bind p f) (lambda (inp) (append-map (cut match <> ([v . inp*] ((f v) inp*))) (p inp))))
+#+end_src
+
+"The definition for bind can be interpreted as follows. First of all, the parser
+p is applied to the input string, yielding a list of (value,string) pairs. Now
+since f is a function that takes a value and returns a parser, it can be applied
+to each value (and unconsumed input string) in turn. This results in a list of
+lists of (value,string) pairs, that can then be flattened to a single list.[fn:mpc]"
+
+We can now see how parsers are combined.
+
+** TODO 
+
