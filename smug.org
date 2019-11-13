@@ -4,11 +4,10 @@
 #+begin_src gerbil :tangle "smug.ss"
   package: drewc
 
-  (import :drewc/smug/primitive :drewc/smug/simple :drewc/smug/prefix)
+  (import :drewc/smug/primitive :drewc/smug/simple )
 
   (export (import: :drewc/smug/primitive)
-          (import: :drewc/smug/simple)
-          (import: :drewc/smug/prefix))
+          (import: :drewc/smug/simple))
 #+end_src
 
 
@@ -30,7 +29,4 @@ The easy way to explain is, of course, an example.
 
  ~++~ always runs the second parser, whereas ~+++~ only runs if the first one
 fails.
-
-~many~ takes a plus combinator as its second argument, which allows us to only
-have the largest block returned.
 

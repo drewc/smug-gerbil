@@ -3,5 +3,20 @@
 I discovered monads after writing a parser for org-mode and thinking there must
 be a better way. 
 
-This will eventually be the gerbil version. 
 
+It will have wonderful documentation at some point, once the Org Parser is
+complete so I know it quite well. For now, how a look at [[https://github.com/drewc/gerborg/blob/master/syntax.org][syntax.org]] in that
+project.
+
+
+  #+begin_src gerbil
+    (def (HEADLINE (min-depth 1))
+      (.let* ((s (STARS min-depth)) (k TODO-KEYWORD) (p PRIORITY)
+              (c COMMENT)
+              (title TITLE) (tags (.or (.begin0 TAGS (skip WS) EOL)
+                                       (.begin EOL #f))))
+        ['headline (list stars: s todo-keyword: k priority: p
+                         title: (list->string title) tags: tags
+                         commented?2: c footnote-section?: (footnote-section? title)
+                         archived?: (archived? tags))]))
+  #+end_src

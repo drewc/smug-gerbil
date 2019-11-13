@@ -4,6 +4,6 @@
 (import :std/build-script)
 
 (defbuild-script
-  '("primitive" "simple" "prefix" "smug"))
+  '("primitive" "simple" "smug"))
 
 
