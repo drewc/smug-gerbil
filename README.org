@@ -9,8 +9,8 @@ complete so I know it quite well. For now, how a look at [[https://github.com/dr
 project.
 
 
-  #+begin_src gerbil
-    (def (HEADLINE (min-depth 1))
+#+begin_src gerbil
+(def (HEADLINE (min-depth 1))
       (.let* ((s (STARS min-depth)) (k TODO-KEYWORD) (p PRIORITY)
               (c COMMENT)
               (title TITLE) (tags (.or (.begin0 TAGS (skip WS) EOL)
@@ -20,3 +20,24 @@ project.
                          commented?2: c footnote-section?: (footnote-section? title)
                          archived?: (archived? tags))]))
   #+end_src
+
+* TODO Emacs Indentation and Highlighting 
+
+#+begin_src emacs-lisp
+  (defun smug-gerbil-syntax ()
+    (interactive)
+
+    (gerbil-put-indent '(.begin .or .any) 0) 
+    (gerbil-put-indent '(.let* .begin0)  1)
+
+    (gerbil-fontlock-add
+     (cons
+      (concat
+       "(" (regexp-opt '(".let*" ".begin" ".begin0" ".or" ".any" ".not")
+                       t)
+       "\\>")
+      '(1 'font-lock-keyword-face  ))))
+
+  (add-hook 'gerbil-mode-hook 'smug-gerbil-syntax)
+#+end_src
+
