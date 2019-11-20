@@ -68,7 +68,7 @@
          ([n . thing]
           (if (and (narrow? thing)
                    (or (< n (narrow-start thing))
-                       (> n (narrow-end thing))))
+                       (>= n (narrow-end thing))))
             []
             (str-item thing n))))
        (catch _ [])))))

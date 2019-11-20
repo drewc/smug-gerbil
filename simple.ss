@@ -16,8 +16,8 @@
 (def (liftP function . args) 
   (cut bind <> (lambda (v) (return (apply function v args)))))
 
-(def (.char=? c) (sat (item) (cut char=? <> c)))
-(def (.char-ci=? c) (sat (item) (cut char-ci=? <> c)))
+(def (.char=? c) (sat (cut char=? <> c)))
+(def (.char-ci=? c) (sat (cut char-ci=? <> c)))
 
 (def (ci=? thing (ret #f))
  (if (string? thing) (.string-ci=? thing ret) (.char-ci=? thing)))
@@ -45,21 +45,20 @@
 
 (def (skip-chars-forward charbag (end #f))
   (def lst (if (list? charbag) charbag (string->list charbag)))
-  (let sk ((ret #f))
+  (let sk ((ret 0))
     (.or (.let* (p (point))
            (if (and end (>= p end)) (return ret)
-              (.begin (sat (cut memv <> lst)) (sk #t))))
+              (.begin (sat (cut memv <> lst)) (sk (1+ ret)))))
          (return ret))))
 
 (def (skip-chars-backward charbag (start #f))
   (def lst (if (list? charbag) charbag (string->list charbag)))
-  (def (skb (p #f) (ret #f))
-    (.or 
-     (if (or (zero? p) (and start (<= start p))) (return ret)
-         (.let* (bp (goto-char (1- p)))
-            (.begin (sat (cut memv <> lst))
-                    (skb bp #t))))
-     (return ret)))
+  (def (skb (p #f) (ret 0))
+    (if (or (zero? p) (and start (<= start p))) (return ret)
+        (.let* (bp (goto-char (1- p)))
+          (.or (.begin (sat (cut member <> lst))
+                       (skb bp (1+ ret)))
+               (.begin (item) (return ret))))))
   (bind (point) skb))
 
 (def (forward-line (count 1))
@@ -75,9 +74,17 @@
             (if (char=? #\newline c)
                     (return p)
                     (bol bp))))))
-    (when (> count 1)
-      (forward-line (1- count)))
-  (bind (point) bol))
+  (.let* (_ (if (> count 1)
+              (forward-line (1- count)) #f))
+    (bind (point) bol)))
+
+(def (end-of-line (count 1))
+  (def eol (.begin (skip (sat (? (not (cut char=? <> #\newline)))))
+                   (point)))
+  (.let* (e eol)
+    (if (> count 1)
+      (.begin (item) (end-of-line (1- count)))
+      (return e))))
 
 (def (buffer-substring start end)
   (peek (.begin (goto-char start) (.make-string (- end start)))))
@@ -118,8 +125,6 @@
                     (xs (at-least (- n 1) parser plus)))
          (return [x . xs]))
         (if (> n 0) (fail) (return []))))
-
-
 
 
 
