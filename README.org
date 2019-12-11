@@ -21,7 +21,7 @@ project.
                          archived?: (archived? tags))]))
   #+end_src
 
-* TODO Emacs Indentation and Highlighting 
+* Emacs Indentation and Highlighting 
 
 #+begin_src emacs-lisp
   (defun smug-gerbil-syntax ()
