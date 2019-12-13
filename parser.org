@@ -1575,26 +1575,112 @@ use, easy to view, and, ehem, easy to debug.
         (check (caar r) => "asd"))
     #+end_src
 
+
+*** ~lazy+~, as we're not lazy enough.
+
+    Things are appearing in the right order, and being lazy takes care of the
+    excess! Actually, it doesn't. Although our ~bind~ is lazy, our ~++~ is not,
+    and always runs both parsers.
+
     #+begin_src gerbil
       (def counter 0)
-      (def (reset-count) (set! counter 0))
+      (def (reset-count) (begin0 counter (set! counter 0)))
       (def (count) (set! counter (1+ counter)))
 
-      (def (many p) (.let* (_ (begin (count) (void)))
-                      (++ (.let* ((x p) (xs (many p))) [x . xs]) [])))
+      (def (count-many p) (.let* (_ (begin (count) (void)))
+                      (++ (.let* ((x p) (xs (count-many p))) [x . xs]) [])))
 
-      (def (some p) (.let* (_ (begin (count) (void)))
-                      (++ [] (.let* ((x p) (xs (some p))) (return [x . xs])))))
+      (def (count-some p) (.let* (_ (begin (count) (void)))
+                      (++ [] (.let* ((x p) (xs (count-some p))) (return [x . xs])))))
+
+      ;;This runs 12 times. 11 for the chars, and one for [].
+      ((.read-line count-many) "123\n567\n9AB")
+      (check (reset-count) => 12)
+      ;; So does this! 
+      ((.read-line count-some) "123\n567\n9AB")
+      (check (reset-count) => 12)
     #+end_src
 
+    Although ascending/descending is different, we still run it all. This can be
+    fixed by a ~lazy+~.
 
+    #+begin_src gerbil :noweb-ref lazy+
+      (def (lazy+ p q)
+        (lambda (inp) (match ((:P p) inp) ([] ((:P q) inp))
+                        (xs (append xs (list (delay ((:P q) inp))))))))
+    #+end_src
 
+    We'll redefine ~many~ any ~some~, and test them. 
+
+    #+begin_src gerbil :noweb-ref c-for-rep
+      (def (many p (plus ++)) (plus (.let* ((x p) (xs (many p))) [x . xs]) []))
+      (def (some p (plus ++)) (plus [] (.let* ((x p) (xs (some p plus))) [x . xs])))
+    #+end_src
    
+     
+   #+begin_src gerbil
+      (def (count-many p (plus ++))
+        (.let* (_ (begin (count) (void)))
+          (plus (.let* ((x p) (xs (count-many p plus))) [x . xs]) [])))
+
+      (def (count-some p (plus ++))
+        (.let* (_ (begin (count) (void)))
+          (plus [] (.let* ((x p) (xs (count-some p plus))) [x . xs]))))
+
+      ;;This runs 12 times. 11 for the chars, and one for [].
+      ((.read-line count-many) "123\n567\n9AB")
+      (check (reset-count) => 12)
+
+      ;; So does this, because the first result is recursive for ~many~.
+      ((.read-line (lambda (p) (count-many p lazy+))) "123\n567\n9AB")
+      (check (reset-count) => 12)
+
+      ;; So does this.
+      ((.read-line count-some) "123\n567\n9AB")
+      (check (reset-count) => 12)
+
+      ;; But this is where the fun lies. 
+      ((.read-line (cut count-some <> lazy+)) "123\n567\n9AB")
+      (check (reset-count) => 4)
+    #+end_src
+
+    Yes, that's right, on only ran for what we specified. The rest of the
+    recursion, which because of ~(item)~ does in fact go all the way to the end,
+    we've simply delayed them. They are not thrown away.
+
+    If we want the line that the lookahead says is before #\9, we can do so.
+
+    #+begin_src gerbil 
+      ((.let* ((l (.read-line (cut count-some <> lazy+)))
+              (_ #\9))
+         #t)
+       "123\n567\n9AB")
+      (check (reset-count) => 8)
+    #+end_src
+  
+
+    And back to 12.
+
+    #+begin_src gerbil 
+      ((.let* ((l (.read-line (cut count-some <> lazy+)))
+              (_ #!eof))
+         #t)
+       "123\n567\n9AB")
+      (check (reset-count) => 12)
+    #+end_src
+
+    The delay of the rest of the combination helps to both relieve the amount of
+    times it's run by default, and keep around the remainder in case we fail
+    somewhere else along the line.
+
 ** Limiting the number of results
    :PROPERTIES:
    :CUSTOM_ID: limit_results
    :END:
 
+   Even with ~lazy+~.
+
+ 
 * Primitive 
   
 #+begin_src gerbil :tangle "primitive.ss" :noweb yes

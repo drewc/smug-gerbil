@@ -173,3 +173,6 @@
                        (if (boolean? str-or-n-or-b) str-or-n-or-b #t))))))
      (P:string= str pred: pred start: start end: end return-parsed: r?)))
 (def (.string-ci=? str . args) (apply .string= char-ci=? str args))
+
+(def (some p) (++ [] (.let* ((x p) (xs (some p))) (return [x . xs]))))
+(def (some1 p) (.let ((x p) (xs (some p))) (return [x . xs])))
