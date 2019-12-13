@@ -1,4 +1,4 @@
-(import :std/sugar :std/generic)
+(import :std/sugar :std/generic :std/ref :std/srfi/1 :std/lazy)
 ;; return v = \inp -> [(v,inp)]
 (def (return v) (lambda (inp) [[v . inp]]))
 
@@ -9,12 +9,16 @@
 (defstruct String (point thing) transparent: #t)
 
 (defgeneric input-item-ref (lambda (t n) (ref t n)))
-(defgeneric input-item
-  (cut match <> ((String point parsee)
-                 (try  [(cons (input-item-ref parsee point)
-                              (String (1+ point) parsee))]
-                       (catch _ [])))
-       (parsee (input-item (String 0 parsee)))))
+(defgeneric input-item (cut error "No input-item declared for : " <>))
+(defmethod (input-item (str <string>)) (input-item (String 0 str)))
+(defmethod (input-item (str <pair>)) (input-item (String 0 str)))
+(defmethod (input-item (str <vector>)) (input-item (String 0 str)))
+(defmethod (input-item (str String))
+  (match str
+    ((String point parsee)
+     (try  [(cons (input-item-ref parsee point)
+                  (String (1+ point) parsee))]
+           (catch (e) #;(display-exception e) [])))))
 (def ITEM input-item)
 (def (item) ITEM)
 
@@ -31,12 +35,16 @@
                 ((char? v) char:)
                 ((string? v) string:)
                 (((? (or boolean? void? null?)) v) return:)
+                ((eof-object? v) eof:)
                 (#t ensure:))
               ,v))))
 
     ((macro char: c)
      #'(sat (cut char=? <> c)))
     ((macro return: v) #'(return v))
+    ((macro eof: v) #'(lambda (i) (match (ITEM i)
+                               ([] [[v . i]])
+                               (t []))))
     ((macro ensure: thing)
      #'(let (v thing)
          (cond
@@ -44,6 +52,7 @@
           ((char? v) (:P char: v))
           ((string? v) (:P string: v))
           (((? (or boolean? void? null?)) v) (:P return: v))
+          ((eof-object? v) (:P eof: v))
           (#t (cut ensure-parser v <>)))))
     ((macro string: str)
      (let* ((v (syntax->datum #'str))
@@ -56,11 +65,27 @@
                   (bind (:P char: (car ,cs))
                         (lambda _ (str? (cdr ,cs))))))))))))
 
+;; (import :std/lazy)
 (def (bind p f)
-  (def sugarPV (:P p))
-  (def sugarPF (lambda (v) (let (r (f v)) (if (procedure? r) r (return r)))))
-  (lambda (inp) (append-map
-            (cut match <> ([v . inp*] ((sugarPF v) inp*))) (sugarPV inp))))
+  (def (sugarPF f) (lambda (v) (let (r (f v)) (if (procedure? r) r (return r)))))
+  (def (callPF PF pair)
+    (match pair
+      ([v . inp] (((sugarPF PF) v) inp))
+      (else
+       (error pair " is not a pair as expected for a [v . inp] return value"))))
+   (lambda (inp)
+     (let lp ((r ((:P p) inp)))
+       (match r 
+         ([] [])                     
+         ([pair . rest]
+          (if (lazy? pair)
+            (lp (append (force pair) rest))
+            (let ((PFr (callPF f pair)))
+              (if (null? PFr) (lp rest)
+                  (append PFr
+                          (if (null? rest) rest
+                              (list (delay (let (vs (lp rest))
+                                             (if (void? vs) [] vs))))))))))))))
 
 (defsyntax (.let* stx)
   (syntax-case stx ()

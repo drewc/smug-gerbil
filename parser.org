@@ -190,7 +190,7 @@
 
 
   That's fine and dandy, but what if we want to parse a list of characters?
-  That's a pair! How about a vector of bytes? A hash of tokens? They are not
+  That's a pair! How about a vector of bytes? A tree of tokens? They are not
   pairs but also not strings.
 
   To deal with all that and keep the mental baggage to a minimum, we'll create
@@ -232,18 +232,22 @@
   We'll also crib our own ~input-item~.
 
   #+begin_src gerbil :noweb-ref item
-  (defgeneric input-item
-    (cut match <> ((String point parsee)
-                   (try  [(cons (input-item-ref parsee point)
-                                (String (1+ point) parsee))]
-                         (catch _ [])))
-         (parsee (input-item (String 0 parsee)))))
+    (defgeneric input-item (cut error "No input-item declared for : " <>))
+    (defmethod (input-item (str <string>)) (input-item (String 0 str)))
+    (defmethod (input-item (str <pair>)) (input-item (String 0 str)))
+    (defmethod (input-item (str <vector>)) (input-item (String 0 str)))
+    (defmethod (input-item (str String))
+      (match str
+        ((String point parsee)
+         (try  [(cons (input-item-ref parsee point)
+                      (String (1+ point) parsee))]
+               (catch (e) #;(display-exception e) [])))))
   #+end_src
 
   Wait a minute! ~input-item~ is a *Parser Value*! All we need for this
   primitive function is to wrap that in a function after naming it ITEM. 
 
- Lowercase for functions and upcase for Parser variables? Who knows. 
+  Lowercase for functions and upcase for Parser variables? Who knows. 
 
   #+begin_src gerbil :noweb-ref item
     (def ITEM input-item)
@@ -563,12 +567,16 @@ solved first, and the last latter.
                    ((char? v) char:)
                    ((string? v) string:)
                    (((? (or boolean? void? null?)) v) return:)
+                   ((eof-object? v) eof:)
                    (#t ensure:))
                  ,v))))
 
        ((macro char: c)
         #'(sat (cut char=? <> c)))
        ((macro return: v) #'(return v))
+       ((macro eof: v) #'(lambda (i) (match (ITEM i)
+                                  ([] [[v . i]])
+                                  (t []))))
        ((macro ensure: thing)
         #'(let (v thing)
             (cond
@@ -576,6 +584,7 @@ solved first, and the last latter.
              ((char? v) (:P char: v))
              ((string? v) (:P string: v))
              (((? (or boolean? void? null?)) v) (:P return: v))
+             ((eof-object? v) (:P eof: v))
              (#t (cut ensure-parser v <>)))))
        ((macro string: str)
         (let* ((v (syntax->datum #'str))
@@ -655,12 +664,11 @@ solved first, and the last latter.
  Regardless, We'll check the return value of the *Parser Function*, and wrap a
  ~return~.
 
-#+begin_src gerbil :noweb-ref bind
+#+begin_src gerbil 
   (def (bind p f)
-    (def sugarPV (:P p))
     (def sugarPF (lambda (v) (let (r (f v)) (if (procedure? r) r (return r)))))
     (lambda (inp) (append-map
-              (cut match <> ([v . inp*] ((sugarPF v) inp*))) (sugarPV inp))))
+              (cut match <> ([v . inp*] ((sugarPF v) inp*))) ((:P p) inp))))
 #+end_src
 
 Now our ~bind~ has a short form.
@@ -1021,7 +1029,7 @@ with a letter, then it can have numbers.
 
 Because ~many~ will return an empty list, and often we want success of the
 parser to determine if we proceed, ~many1~ is the solution.
-
+ 
 #+begin_src gerbil :noweb-ref c-for-rep
   (def (many1 p) (.let* ((x p) (xs (many p))) [x . xs])) 
 #+end_src
@@ -1142,29 +1150,450 @@ expressions is written as follows:
   factor ::= + | nat | ( expr ) 
  #+end_quote
 
-   We can translate them to smug.
+   We can translate them to directly to smug.
+
    #+begin_src gerbil
-     (def (expr) (++ (.let* ((x (expr)) (f addop) (y (factor))) (f x y))
-                     (factor)))
+     (def expr (++ (.let* ((x expr) (f addop) (y factor)) (f x y))
+                     factor))
      (def addop (++ (.let* (_ #\+) (return +)) (.let* (_ #\-) (return -))))
-     (def (factor) (++ Nat (bracket #\) (expr) #\))))
+     (def factor (++ Nat (bracket #\(expr#\))))
    #+end_src
 
    It's really nice! The ~expr~ actually evaluates things. But, it calls itself,
    first. This sort of thing, *left-recursion*, is not uncommon in grammars. But
    it runs forever. Not what we want.
 
-   That's what ~many~ is for. In fact, ~expr~ is not recursive whatsoever.
+   Not only that, but trying to define variables using undefined variables.
+   That's not going to work.
 
+   To make it right for the compiler, only ~addop~ stays the same.
    #+begin_src gerbil 
-     (def (expr)
-       (.let* ((x (factor))
-               (fys (many (.let* ((f addop) (y (factor))) [f . y]))))
-         [x . fys]))
+     (def addop (++ (.let* (_ #\+) (return +)) (.let* (_ #\-) (return -))))
    #+end_src
 
-   Now
+   The first attempt to make ~factor~ and ~expr~ function is to make then into
+   functions. That's because functions reference at run time, and can reference
+   themselves.
 
+   #+begin_src gerbil
+  (def (factor) (++ Nat (bracket #\((expr)#\))))
+  (def (expr)
+    (.let* ((x (factor)) (fys (many (.let* ((f addop) (y (factor))) [f . y]))))
+      [x . fys]))
+   #+end_src
+   
+   Yet I have to admit, though that looks fine, it's also infinitely recursive. F*#k!
+
+   So, to deal with it is simple. All parser values are in fact functions. Even
+   better, ~.let*~ can automagically make a function that references an
+   identifier at run-time.
+
+   Remember that ~let*~ expands to ~(bind PV PF)~. So, we can choose to
+   reference within the *PF*, which is run only after the *PV* succeeds.
+
+   In short: 
+
+   #+begin_src gerbil
+     (import :std/interactive)
+     (@expand (.let* ((_ (void))) this-is-a-lambda))
+     ;; => (bind (:P (void)) (lambda (_) (.let* () this-is-a-lambda)))
+
+     (@expand (.let* () this-is-a-lambda))
+     ;; => (%#begin (%#ref this-is-a-lambda))
+
+     ;; with total macroexpand:
+     ;; => (bind (return (void)) (lambda (_) (%#begin (%#ref this-is-a-lambda))))
+  #+end_src
+
+  Using that cheat, we can make them all variables, not add the extra irritating
+  parens, and make our syntax more grammatical.
+  
+
+   #+begin_src gerbil 
+     (def factor Nat)
+     (def addop (++ (.let* (_ #\+) (return +)) (.let* (_ #\-) (return -))))
+     (def expr
+       (.let* (;;; this makes the rest a function that references factor so we can
+               ;;; set! it.
+               (_ #!void))
+               ;;; We are now in a "Thunk"
+               (x factor)
+               (fys (many (.let* ((f addop) (y factor)) [f . y]))))
+              [x . fys]))
+
+     ;; and now we set it.
+     (set! factor (++ Nat (bracket #\( expr #\))))
+
+
+   #+end_src
+   Yeah! Bare symbols allow use of non-verbose sugar. But this section is about
+   giving meaning to the separators. We keep ~addop~, and it's a function. So,
+   running ~(expr "1-2+3-4")~ makea ~x = 1~ and ~fys = (#<procedure -> . 2)
+   (#<procedure +> . 3) (#<procedure -> . 4)~.
+
+   This is scheme, and that list cries out to be folded. In doing so, we'll run
+   the ~addop~ function.
+
+   #+begin_src gerbil 
+     (def expr
+       (.let* ((_ #!void) (x factor)
+               (fys (many (.let* ((f addop) (y factor)) [f . y]))))
+         (foldl (lambda (fy x) (match fy ([f . y] (f x y)))) x fys)))
+   #+end_src
+
+   #+begin_src gerbil
+     (check (caar (expr "1+2-3+4")) => 4)
+     (check (caar (expr "(1+2)-(3+4)")) => -4)
+     (check (caar (expr "(1)+(2-3+4)")) => 4)
+     (check (caar (expr "1+2-(3+4)")) => -4)
+     (check (caar (expr "(1)+(2-3)+(4)")) => 4)
+   #+end_src
+  
+   That operation is common enough that a combinator, ~chainl1~, does just that.
+
+   #+begin_src gerbil
+     (def (chainl1 p op)
+       (.let* ((x p) (fys (many (.let* ((f op) (y p)) [f . y])))()
+         (foldl (lambda (fy x) (match fy ([f . y] (f x y)))) x fys)))
+   #+end_src
+
+   
+   Our parser syntax becomes shorter.
+
+   #+begin_src gerbil 
+     (def factor Nat)
+     (def addop (++ (.let* (_ #\+) (return +)) (.let* (_ #\-) (return -))))
+     (def expr (.let* ((_ (void))) (chainl1 factor addop)))
+     (set! factor (++ Nat (bracket #\( expr #\))))
+   #+end_src
+
+   Notice the repetition in ~addop~? That's also quite common, so we'll make a combinator, ~op~, for that as well. 
+   
+   #+begin_src gerbil
+     (def (ops . pairs)
+       (def op (cut match <> ([p . op] (.let* (_ p) (return op)))))
+       (foldr ++ FAIL (map op pairs)))
+   #+end_src
+
+   All we're doing is making a list of ~[parser . operator]~ into a nested ~++~. That allows more shorthand.
+
+   #+begin_src gerbil
+     (def addop (ops [#\+ . +] [#\- . -]))
+   #+end_src
+
+   Efficiency is a concern. Syntax and short-forms usually come second to "make
+   it fast!". That's why ~.list=~ and friends can not build things.
+
+   ~many~ builds a list that we then fold. We can avoid that entirely by
+   redefining ~chainl1~.
+
+   #+begin_src gerbil
+     (def (chainl1 p op)
+       (def (chain-link x)
+         (++ (.let* ((f op) (y p)) (chain-link (f x y))) (return x)))
+       (bind p chain-link))
+   #+end_src
+
+   Remember our ~Nat~? We build a list there as well. We don't have to when
+   using ~chainl1~ The extra ~let n ()~ is just to be able to type ~def~ for
+   locally definitions.
+
+   #+begin_src gerbil
+     (def Nat
+       (let n () (def (op m n) (+ (* m 10) n))
+         (def digit (.let* (n (sat char-numeric?)) (string->number (string n))))
+         (chainl1 digit (return op))))
+   #+end_src
+
+   Of course, some things are the opposite. So, while *+/-* are
+   left-associative, *^*, for exponents, associates to the right.
+
+   #+begin_src gerbil 
+     (def (chainr1 p op)
+       (.let* (x p)
+         (++ (.let* ((f op) (y (chainr1 p op))) (return (f x y)))
+             (return x))))
+   #+end_src
+
+
+   Now that we have all that, we can make a more readable, more performant, and
+   more *BNF* like parser definition.
+
+   #+begin_src gerbil 
+     (def AddOp (ops [#\+ . +] [#\- . -]))
+     (def ExpOp (ops [#\^ . expt]))
+     (def Factor #f)
+     (def Term (cut (chainr1 Factor ExpOp) <>))
+     (def Expr (chainl1 Term AddOp))
+     (set! Factor (++ Nat (bracket #\( Expr #\))))
+   #+end_src
+
+
+   #+begin_src gerbil
+     (check (caar (Expr "(2^3)+2-1")) => 9)
+   #+end_src
+
+
+   We were able to get right of the left-recursion and excess list creation, but
+   we still return a lot of results. For every term, a result is returned.
+
+   #+begin_src gerbil
+     (check (length (Expr "1+2-(3^4)+(5)")) => 4)
+   #+end_src
+
+
+   Also, our ~++~ and our ~many~ are both greedy and overbearing. This is
+   partially due to our design, and partially due to the language. This will be
+   covered in the next section.
+
+
+* Efficiency of parsers
+
+The entire reason behind *smug* is a nice way to look at parser definitions
+while still being a part of the programming language. Beyond the syntax ~.let*~
+and the rarely used ~:P~, we are just normal syntax.
+
+But, a lot of the documentation on parsers, like *MPC*'s[fn:1] is based on
+functional languages where the compiler is lazy, and things are only run when
+needed.
+
+So, while left-factoring and moving things around help for translation, there
+are some fundamental issues. We'll get over those here, and create an easy to
+use, easy to view, and, ehem, easy to debug.
+
+** Left factoring 
+
+   Let's say we want a parser for addition or subtraction.
+
+   #+begin_src gerbil
+     (def (meval)
+       (def add (.let* ((x Nat) (_ #\+) (y Nat)) (+ x y)))
+       (def sub (.let* ((x Nat) (_ #\-) (y Nat)) (- x y)))
+       (++ add sub))
+   #+end_src
+
+   It works great, but for subtraction is has to parse the ~x~ twice. Us
+   lispnicks know all about how to solve this, it comes almost naturally. That
+   is a goal for *smug*.
+
+   #+begin_src gerbil
+     (def (meval)
+       (def (add x) (.let* ((_ #\+) (y Nat)) (+ x y)))
+       (def (sub x) (.let* ((_ #\-) (y Nat)) (- x y)))
+       (.let* (x Nat) (++ (add x) (sub x))))
+   #+end_src
+
+   That only parses ~x~ once. To make it prettier, we can use ~ops~, but it does
+   not, likely, effect performance.
+
+   #+begin_src gerbil
+     (def Meval (.let* ((x Nat) (f (ops [#\+ . +] [#\- . -])) (y Nat))
+                  (return (f x y))))
+   #+end_src
+
+** Improving laziness, aka let's be lazy. 
+
+   The very simple case of parsing a line. A line is any chars ending with a
+   ~#\newline~, or the end of things.
+
+   The easy way is simply to test.
+
+   #+begin_src gerbil
+     (def (.read-line)
+       (.let* ((cs (many (sat (? (not (cut char=? #\newline <>))))))
+               (nl (++ #\newline (if (null? cs) FAIL #!eof))))
+         (list->string cs)))
+   #+end_src
+
+   While that works, it does have to run the test on every line. Now, we are
+   indeterminate. So, trying as follows, we do end up with a line.
+
+   #+begin_src gerbil
+     (def (.read-line)
+       (.let* ((cs (many (item)))
+               (nl (++ #\newline (if (null? cs) FAIL #!eof))))
+         (list->string cs)))
+   #+end_src
+
+   In fact, we end up with two lines, because ~(many (item))~ also succeeds for
+   a newline, and ~++~ does both no matter what. Even better, because of how
+   ~many~ is defined by returning results in decreasing order, the first line is
+   the last line.
+
+   #+begin_src gerbil
+     (check ((.read-line) "asd\n123")
+            =>
+            `(("asd\n123" . ,(String  7 "asd\n123"))
+               ("asd" . ,(String 4  "asd\n123"))))
+   #+end_src
+
+*** ~some~ and ~some1~, Part 1
+
+    To turn that around we can define a new combinator, ~some~, and its child,
+    ~some1~.
+
+    #+begin_src gerbil :noweb-ref some
+      (def (some p) (++ [] (.let* ((x p) (xs (some p))) (return [x . xs]))))
+      (def (some1 p) (.let ((x p) (xs (some p))) (return [x . xs])))
+    #+end_src
+
+
+
+   #+begin_src gerbil
+     (def (.read-line)
+       (.let* ((cs (some (item)))
+               (nl (++ #\newline (if (null? cs) FAIL #!eof))))
+         (list->string cs)))
+   #+end_src
+   
+   That improves what we see versus what we want, and the first thing returned
+   is the line desired.
+
+   #+begin_src gerbil
+     (check ((.read-line) "asd\n123")
+            =>
+            `(("asd" . ,(String 4  "asd\n123"))
+              ("asd\n123" . ,(String  7 "asd\n123"))))
+   #+end_src
+
+   While that does give us nice looking parsers that return what we want, it
+   means that a parser for one line returns a result of every single character
+   in the parsee.
+
+   We can just choose the first by [[#limit_results][limiting the number of results]], but that
+   still means that every time we use ~many~ or ~some~ in that manner, it will
+   succeed for every single character.
+
+   Performance, eh?
+
+*** Lazy ~bind~
+
+    As it is, ~bind~ calls *PV* with input, and then call *PF* on every value in
+    the list returned by *PV*. This is what allows non-determinism, and the
+    ability to put things shortly, but often we only want the first result, and
+    only the rest if we fail somewhere else.
+
+    We can do so! Even better, it involves being lazy. Less work, less typing,
+    but at the same time non-determinism means that if we have to get out of
+    bed, we will.
+
+
+    #+begin_src gerbil :noweb-ref bind
+       ;; (import :std/lazy)
+       (def (bind p f)
+         (def (sugarPF f) (lambda (v) (let (r (f v)) (if (procedure? r) r (return r)))))
+         (def (callPF PF pair)
+           (match pair
+             ([v . inp] (((sugarPF PF) v) inp))
+             (else
+              (error pair " is not a pair as expected for a [v . inp] return value"))))
+          (lambda (inp)
+            (let lp ((r ((:P p) inp)))
+              (match r 
+                ([] [])                     
+                ([pair . rest]
+                 (if (lazy? pair)
+                   (lp (append (force pair) rest))
+                   (let ((PFr (callPF f pair)))
+                     (if (null? PFr) (lp rest)
+                         (append PFr
+                                 (if (null? rest) rest
+                                     (list (delay (let (vs (lp rest))
+                                                    (if (void? vs) [] vs))))))))))))))
+    #+end_src
+
+    The algo is simple. We loop across the list of pairs. If the first "pair" is
+    ~lazy?~, we force it, which returns a list of pairs. We append that to the
+    "rest", and loop again. If it's a an actual pair, we run the *PF* and if it
+    succeeds, we ~delay~ the rest. Otherwise, if it fails, we continue. 
+
+    With that laziness, ~many~ and ~some~ become a wee bit more different then
+    simply reversing the order.
+
+    
+    #+begin_src gerbil
+      (def (.read-line (combine many))
+        (.let* ((cs (combine (item)))
+                (nl (++ #\newline (if (null? cs) FAIL #!eof))))
+          (list->string cs)))
+    #+end_src
+
+    ~many~ is decreasing order, ~some~ increasing. Because of laziness, once a
+    parser succeeds, they rest of the list is delayed.
+
+    Because of how ~many~ is defined, the first result is, well, the very last
+    match.
+
+    #+begin_src gerbil
+      (let (r ((.read-line many) "asd\n123"))
+        (check (length r) => 2)
+        (check (car r) => `("asd\n123" . ,(String 7 "asd\n123")))
+        (check-predicate (cadr r) lazy?))
+    #+end_src
+
+    Yet, the delay can still be forced, like, for example, through ~bind~ aka
+    ~.let*~. For example, let's say we want the first line. Here's one way.
+
+    #+begin_src gerbil
+      (let (r ((.let* ((r (.read-line many))
+                       ;; the second line starts with #\1, so it we have it, this is
+                       ;; the first line.
+                       (_ #\1))
+                      (return r)) "asd\n123"))
+        (check (caar r) => "asd"))
+    #+end_src
+
+    That does use ~many~ though, so first it does everything and throws away the
+    latter. Descending order.
+
+    #+begin_src gerbil
+      (let (r ((.let* ((r (.read-line many))
+                       ;; the second line starts with #\1, but so does the third
+                       (_ #\1))
+                 (return r)) "asd\n123\n1234"))
+        (check (caar r) => "asd\n123"))
+    #+end_src
+
+    Since ~some~ is the opposite, ascending, it always returns the first
+    matched.
+
+
+    #+begin_src gerbil
+      (let (r ((.let* ((r (.read-line some))
+                       ;; the second line starts with #\1, but so does the third. Some
+                       ;; is the correct combinator
+                       (_ #\1))
+                 (return r)) "asd\n123\n1234"))
+        (check (caar r) => "asd"))
+    #+end_src
+    
+    In fact, we do not even need the test for one in this case.
+
+    #+begin_src gerbil
+      (let (r ((.let* (r (.read-line some)) (return r))
+               "asd\n123\n1234"))
+        (check (caar r) => "asd"))
+    #+end_src
+
+    #+begin_src gerbil
+      (def counter 0)
+      (def (reset-count) (set! counter 0))
+      (def (count) (set! counter (1+ counter)))
+
+      (def (many p) (.let* (_ (begin (count) (void)))
+                      (++ (.let* ((x p) (xs (many p))) [x . xs]) [])))
+
+      (def (some p) (.let* (_ (begin (count) (void)))
+                      (++ [] (.let* ((x p) (xs (some p))) (return [x . xs])))))
+    #+end_src
+
+
+
+   
+** Limiting the number of results
+   :PROPERTIES:
+   :CUSTOM_ID: limit_results
+   :END:
 
 * Primitive 
   
@@ -1643,7 +2072,7 @@ Our buffer starts at 0.
 
 ** ~load-primitive.ss~
 #+begin_src gerbil :tangle "load-primitive.ss" :noweb yes :comment noweb
-  (import :std/sugar :std/generic)
+  (import :std/sugar :std/generic :std/ref :std/srfi/1 :std/lazy)
   <<return>>
 
   <<fail>>
@@ -1655,7 +2084,7 @@ Our buffer starts at 0.
   <<p-ensure-parser>>
 
   <<bind>>
-  
+
   <<.let*>>
 
   <<sat>>
@@ -1667,6 +2096,8 @@ Our buffer starts at 0.
   <<sepby>>
 
   <<predicates>>
+
+  <<some>>
 #+end_src
 
 ** ~test-parser.ss~
