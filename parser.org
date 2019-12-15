@@ -729,192 +729,6 @@ And because ~.let*~ uses ~bind~ underneath, we can get rid of that final ~return
     ;;  (foobar . #<String point: 6 thing: "foobarbaz">))
   #+end_src
 
-** ~.list=~ and predicate friends. 
-
-   *SRFI 1* has ~(list= elt= list ...)=~. The gerbil version seems to have the
-   predicate optional.
-
-   Performance sometimes matters, so optionally we will not build and return the
-   parsed list.
-
-  #+begin_src gerbil :noweb-ref predicates
-    (def* .list=
-      ((lst) (.list= equal? lst #t))
-      ((pred-or-list list-or-bool)
-       (.list= (if (list? pred-or-list) equal? pred-or-list)
-               (if (list? pred-or-list) pred-or-list list-or-bool)
-               (if (list? pred-or-list) list-or-bool #t)))
-      ((elt= lst return-parsed?)
-       (let l= ((cs lst))
-         (if (null? cs) (return [])
-             (.let* ((c (sat (cut elt= <> (car cs))))
-                     (cs (l= (cdr cs))))
-               (if return-parsed? (cons c cs) lst))))))
-  #+end_src
-
-  The variable args allow us to decide what we want.
-  
-  #+begin_src gerbil :noweb-ref test-.list=
-    (def test-.list=
-      (.let* (
-             ;; the default is char=?
-             (lst (.list= '(#\a #\s)))
-             ;; If we have a list, we can parse that
-             (the-list (return '(#\d)))
-             ;; if an arg after the list is #f, we don't collect the parsed list,
-             ;; and return the list we passed
-             (also-the-list (.list= the-list #f))
-             ;; If the first argument is a predicate, use that on the chars.
-             (case-in (.list= char-ci=? '(#\F #\G)))
-             ;; same thing for the #f
-             (the-case-in (return '(#\H #\J)))
-             (also-the-case-in (.list= char-ci=? the-case-in #f)))
-
-
-        [lst the-list also-the-list case-in the-case-in also-the-case-in]))
-
-    (let (r (test-.list= "asdfghjkl;"))
-      (match r
-        ([[res . Str]]
-         (check Str => (String 7 "asdfghjkl;"))
-         (match res
-           ([lst the-list also-the-list case-in the-case-in also-the-case-in]
-            (check lst => '(#\a #\s))
-            (check the-list => '(#\d))
-            (check-eq? the-list also-the-list)
-            (check case-in => '(#\f #\g))
-            (check also-the-case-in => '(#\H #\J))
-            (check-eq? the-case-in also-the-case-in))))))
-
-  #+end_src
-
-
-*** ~string=~, ~:P~ is not the only way to test strings.
-
-    We just made ~:P~, and it has within it a parser for a string.
-
-    #+begin_src gerbil
-   (@expand1 (:P string: "asd"))
-   ;; => 
-   ;; (let* ((#:g20770 "asd") (#:g20771 '(#\a #\s #\d)))
-   ;;   (let str? ((#:g20772 #:g20771))
-   ;;     (if (null? #:g20772)
-   ;;         (return #:g20770)
-   ;;         (bind (:P char: (car #:g20772)) (lambda _ (str? (cdr #:g20772)))))))
- #+end_src
-
-    So, the easy way to create ~.string=?~ is by using it.
-
-    #+begin_src gerbil :noweb-ref predicates
-      (def (.string=? str (start #f) (end #f))
-        (:P string:
-            (if (not (or start end)) str
-                (substring
-                 str (or start 0) (or end (string-length str))))))
-   #+end_src
-
-   Now, that's a really nice thing to have around, especially when we want to
-   return a parser and not a string, which we did specifically avoid after all.
-
-   But at the same time, we may want something like case-insensitivity, which is
-   the primary use of this. We may want to return the string parsed, not the
-   string predicated towards.
-
-   ~.list=~ to the rescue,  to father ~.string=~ mating with ~P:string=~.
-
-   ~P:string=~ breaks it up into keywords. Just like we did for ~.let*~.
-
- #+begin_src gerbil :noweb-ref predicates
-   (def (P:string= str pred: (pred char=?) start: (start #f) end: (end #f)
-                   return-parsed: (r? #t))
-     (def lst (string->list
-               (if (or (not (or start end))
-                       (and (eqv? start 0) (not end)))
-                str
-                (substring str (or start 0) (or (and (number? end) end) (string-length str))))))
-
-     (.let* (l (.list= pred lst r?))
-       (if r? (list->string l) str)))
- #+end_src
-
-   Just like ~.list=~, we'll have the arg types determine what is passed. 
-
- #+begin_src gerbil :noweb-ref predicates
-   (def (.string= pred-or-str (str-or-n-or-b (void))
-                  (n-or-b (void))
-                  (en-or-b (void))
-                  (r? (void)))
-    (let ((str (if (string? pred-or-str) pred-or-str str-or-n-or-b))
-          (pred (if (string? pred-or-str) char=? pred-or-str))
-          (start (if (number? str-or-n-or-b) str-or-n-or-b
-                     (if (number? n-or-b) n-or-b (if (number? en-or-b) en-or-b #f))))
-          (end (if (string? pred-or-str)
-                 (if (number? str-or-n-or-b)
-                   n-or-b
-                   (if (number? en-or-b) en-or-b #f))
-                 #f))
-          (r? (if (boolean? r?) r?
-                  (if (boolean? en-or-b) en-or-b
-                      (if (boolean? n-or-b) n-or-b
-                          (if (boolean? str-or-n-or-b) str-or-n-or-b #t))))))
-        (P:string= str pred: pred start: start end: end return-parsed: r?)))
- #+end_src
-
-  #+begin_src gerbil :noweb-ref test-.string=
-    (def test-.string=
-      (.let* (
-             ;; the default is char=?
-             (str (.string= "as"))
-             ;; If we have a string, we can parse that
-             (the-string (return "d"))
-             ;; if an arg after the string is #f, we don't collect the parsed list,
-             ;; and return the string we passed
-             (also-the-string (.string= the-string #f))
-             ;; If the first argument is a predicate, use that on the chars.
-             (case-in (.string= char-ci=? "FG"))
-             ;; same thing for the #f
-             (the-case-in (return "HJ"))
-             (also-the-case-in (.string= char-ci=? the-case-in #f))
-             (start-sub (.string=  "1111111kl;" 7))
-             (the-sub (return "01aa"))
-             (also-the-sub (.string= the-sub 1 2 #f))
-             (final-sub (return "asd234"))
-             (also-final-sub (.string= char=? final-sub 3 #f)))
-
-
-        [str the-string also-the-string case-in the-case-in also-the-case-in
-             start-sub the-sub also-the-sub final-sub also-final-sub]))
-
-    (let (r (test-.string= "asdfghjkl;1234"))
-      (match r
-        ([[res . Str]]
-         (check Str => (String 14 "asdfghjkl;1234"))
-         (match res
-           ([str the-string also-the-string case-in the-case-in also-the-case-in
-                 start-sub the-sub also-the-sub final-sub also-final-sub ]
-            (check str => "as")
-            (check the-string => "d")
-            (check-eq? the-string also-the-string)
-            (check case-in => "fg")
-            (check also-the-case-in => "HJ")
-            (check-eq? the-case-in also-the-case-in)
-            (check start-sub => "kl;")
-            (check-eq? the-sub also-the-sub)
-            (check-eq? final-sub also-final-sub))))))
-
-  #+end_src
-
-**** ~.string-ci=?~ and friends.
-
-     Case insensitivity was the whole point. 
-
- #+begin_src gerbil :noweb-ref predicates
-   (def (.string-ci=? str . args) (apply .string= char-ci=? str args))
- #+end_src
-
-    As a matter of fact, that can be used to make ~string>~ and the like, which
-    may happen here at some point.
-
 
 * Combinators for repetition
   :PROPERTIES:
@@ -922,9 +736,8 @@ And because ~.let*~ uses ~bind~ underneath, we can get rid of that final ~return
   :CUSTOM_ID: comb_rep
   :END:
 
-Because of ~++~ and recursion, we already have ~.list=~, which is a recursive
-descent parser. Because that recursion is so common, with building a list along
-the way going hand in hand, there is, of course, a short way to do it.
+Because of ~++~ and recursion is so common, with building a list along the way
+going hand in hand, there is, of course, a short way to do it.
 
 ** Simple Repetition
 
@@ -935,6 +748,7 @@ Starting from the root, let's say we want a list of numbers.
   (def (many-numbers)
    (++ (.let* ((n (sat char-numeric?)) (ns (many-numbers))) [n . ns]) []))
 #+end_src
+
 That's a fairly simple definition, and does start to show off certain features of smug.
 
 #+begin_src gerbil
@@ -988,8 +802,8 @@ We can combine that again. Our parser is for decimal numbers.
   ;;  (1.2340054321e10 . #<String point: 13 thing: "012340054321.0asd">))
 #+end_src
 
-One has nothing after the decimal place, the first has 1. Because many numbers
-can return a nothing list. 
+One has nothing after the decimal place, the first has 1, because ~many-numbers~
+can return a null list.
 
 *** ~many~ times, a parser, part 1.
 
@@ -1030,7 +844,7 @@ with a letter, then it can have numbers.
 Because ~many~ will return an empty list, and often we want success of the
 parser to determine if we proceed, ~many1~ is the solution.
  
-#+begin_src gerbil :noweb-ref c-for-rep
+#+begin_src gerbil :noweb-ref many1
   (def (many1 p) (.let* ((x p) (xs (many p))) [x . xs])) 
 #+end_src
 
@@ -1269,7 +1083,7 @@ expressions is written as follows:
 
    Notice the repetition in ~addop~? That's also quite common, so we'll make a combinator, ~op~, for that as well. 
    
-   #+begin_src gerbil
+   #+begin_src gerbil :noweb-ref meaningful-seps
      (def (ops . pairs)
        (def op (cut match <> ([p . op] (.let* (_ p) (return op)))))
        (foldr ++ FAIL (map op pairs)))
@@ -1282,12 +1096,10 @@ expressions is written as follows:
    #+end_src
 
    Efficiency is a concern. Syntax and short-forms usually come second to "make
-   it fast!". That's why ~.list=~ and friends can not build things.
+   it fast!". ~many~ builds a list that we then fold. We can avoid that entirely
+   by redefining ~chainl1~.
 
-   ~many~ builds a list that we then fold. We can avoid that entirely by
-   redefining ~chainl1~.
-
-   #+begin_src gerbil
+   #+begin_src gerbil :noweb-ref meaningful-seps
      (def (chainl1 p op)
        (def (chain-link x)
          (++ (.let* ((f op) (y p)) (chain-link (f x y))) (return x)))
@@ -1308,7 +1120,7 @@ expressions is written as follows:
    Of course, some things are the opposite. So, while *+/-* are
    left-associative, *^*, for exponents, associates to the right.
 
-   #+begin_src gerbil 
+   #+begin_src gerbil  :noweb-ref meaningful-seps
      (def (chainr1 p op)
        (.let* (x p)
          (++ (.let* ((f op) (y (chainr1 p op))) (return (f x y)))
@@ -1341,11 +1153,9 @@ expressions is written as follows:
      (check (length (Expr "1+2-(3^4)+(5)")) => 4)
    #+end_src
 
-
    Also, our ~++~ and our ~many~ are both greedy and overbearing. This is
    partially due to our design, and partially due to the language. This will be
    covered in the next section.
-
 
 * Efficiency of parsers
 
@@ -1432,12 +1242,15 @@ use, easy to view, and, ehem, easy to debug.
     To turn that around we can define a new combinator, ~some~, and its child,
     ~some1~.
 
-    #+begin_src gerbil :noweb-ref some
+    #+begin_src gerbil
       (def (some p) (++ [] (.let* ((x p) (xs (some p))) (return [x . xs]))))
+    #+end_src
+    #+begin_src gerbil :noweb-ref some1
       (def (some1 p) (.let ((x p) (xs (some p))) (return [x . xs])))
     #+end_src
 
-
+    Using it to redefine ~.read-line~, we start to get closer to code and
+    thought process being aligned.
 
    #+begin_src gerbil
      (def (.read-line)
@@ -1576,7 +1389,7 @@ use, easy to view, and, ehem, easy to debug.
     #+end_src
 
 
-*** ~lazy+~, as we're not lazy enough.
+*** ~lazy+~, ~many~ and ~some~ put to rest as we're not lazy enough.
 
     Things are appearing in the right order, and being lazy takes care of the
     excess! Actually, it doesn't. Although our ~bind~ is lazy, our ~++~ is not,
@@ -1673,14 +1486,501 @@ use, easy to view, and, ehem, easy to debug.
     times it's run by default, and keep around the remainder in case we fail
     somewhere else along the line.
 
+   #+begin_src gerbil :noweb-ref some-and-many
+      (def (many p) (lazy+ (.let* ((x p) (xs (many p))) [x . xs]) []))
+      (def (some p) (lazy+ [] (.let* ((x p) (xs (some p))) [x . xs])))
+    #+end_src
+
+*** ~plus~ and ~.any~.
+
+
+    There's a reason it should be called ~plus~, and beyond that it's a fun
+    name, so alias time.
+    
+    #+begin_src gerbil :noweb-ref lazy+
+      (defalias plus lazy+)
+    #+end_src
+
+    Given that, we'll define a parser for any list of args.
+
+    #+begin_src gerbil :noweb-ref .any
+      (def (.any . ps) (foldr plus FAIL ps))
+    #+end_src
+    
+
 ** Limiting the number of results
    :PROPERTIES:
    :CUSTOM_ID: limit_results
    :END:
 
-   Even with ~lazy+~.
+   Even with ~lazy+~, we still store the potential to go further. Often, the
+   developer knows it's time to stop. In ~.readline~, we do not care about the
+   rest, as they are not lines, regardless of what ~(item)~ says about the
+   contents. 
 
+*** ~.first~
+
+    For that reason. ~.first~ exists.
+
+    #+begin_src gerbil :noweb-ref .first
+      (def (.first p) (lambda (inp) (match ((:P p) inp) ([x . xs] [x]) ([] []))))
+    #+end_src
+
+    Using that, we can now have only one line read by ~.read-line~.
+
+     #+begin_src gerbil
+       (def (.read-line)
+         (.first (.let* ((cs (some (item)))
+                         (nl (++ #\newline (if (null? cs) FAIL #!eof))))
+                   (list->string cs))))
+     #+end_src
+
+*** ~.or~ and ~+++~
+
+  To limit results of ~.any~ all we have to do is wrap it with ~first~. Same for
+  ~+++~, which is a ~++~ or ~plus~ like that becomes determinate.
+
+  #+begin_src gerbil :noweb-ref .or-and-+++
+    (def (.or . ps) (.first (apply .any ps)))
+    (def (+++ p q) (.first (plus p q)))
+  #+end_src
+  
+
+* ~run~'ing parsers
+  
+  To this point we've use ~caar~ to see the first result of a parser. There are
+  better ways to go about it.
+  #+begin_src gerbil
+    (def (run p inp (fail-object #f))
+        (let lp ((v ((:P p) inp)))
+          (cond ((null? v) fail-object)
+                ((lazy? (car v))
+                 (let (new (force (car v)))
+                   (if (null? new) (lp (cdr v))
+                       (lp new))))
+                (#t (caar v)))))
+  #+end_src
+* Lifting operators and functions to parsers
+
+  Right now we have efficient parsers with decent syntax. To express things
+  further a few items are nice. 
+
+  We already have ~.let*~ and ~.first~ as primitives so I think that ~.~ prefix
+  is fair. For common functions and operations that function almost exactly in
+  the manner expected by the name, we know what to expect.
+
+  
+** ~.begin~ and ~.begin0~
+
+   There have been a lot of ~(.let* (_ ...) ...)~ forms. While being able to
+   ignore something is great, and we'll actually use that, those familiar with
+   scheme see it right now.
+
+   #+begin_src gerbil :noweb-ref begins
+     (defrules .begin ()
+         ((macro p)
+          (.let* (x p) (return x)))
+         ((macro p ps ...)
+          (.let* (_ p) (macro ps ...))))
+
+     (defrules .begin0 ()
+       ((macro p)
+        (.let* (x p) (return x)))
+       ((macro p ps ...)
+        (.let* ((x p) (_ (.begin (macro ps ...)))) (return x))))
+     
+   #+end_src
+  
+   That allows even short syntactic declarations, which is a large part of the
+   point of life, the universe, and everything.
+
+   #+begin_src gerbil
+     (def Answer (.begin "42"))
+
+     (check (caar (Answer "42")) => "42")
+     (check-predicate (Answer "Anything Else") null?)
+   #+end_src
+
+** ~liftP~, lift a function to a parser
+
+   Often a normal function can be wrapped in a parser. ~liftP~ does just that.
+
+#+begin_src gerbil :noweb-ref liftP
+  (def (liftP fn) (cut bind <> (lambda (r) (return (fn r)))))
+#+end_src
+
+#+begin_src gerbil
+  (check (caar (((liftP list->string) (many (item))) "asd")) => "asd")
+#+end_src
+
+** ~.[char|list|string|ci]=[?]~ and predicate friends. 
+
+   Predication? Though for many, ~sat~ does the job without issue, these just
+   make it clear, and shorter. According to a totally unknown reference, a
+   programmer averages 10 working lines of code a day. More that fits on a line,
+   the more produced, ain't that right?
+
+*** ~characters~'s 
+
+   By default our ~:P~ does it primitively. This is just the same thing done
+   with ~sat~, which is non-primitive.
+
+   #+begin_src gerbil :noweb-ref predicates
+     (defsyntax (def.charsat stx)
+       (syntax-case stx ()
+         ((m pred)
+          (let (pred? (syntax->datum #'pred))
+          (datum->syntax #'m
+            `(def (,(string->symbol
+                     (string-append "." (symbol->string pred?))) c)
+               (sat (cut ,pred? <> c))))))
+         ((m pred preds ...)
+          #'(begin (m pred)
+                   (m preds ...)))))
+
+     (def.charsat char=? char>? char<? char<=? char>=?
+       char-ci=? char-ci<=? char-ci>=? char-ci<? char-ci>?)
+
+     (def (.char-alphabetic?) (sat char-alphabetic?))
+     (def (.char-numeric?) (sat char-numeric?))
+     (def (.char-upper-case?) (sat char-upper-case?))
+     (def (.char-lower-case?) (sat char-lower-case?))
+   #+end_src
+  
+*** ~.list=~
+
+    *SRFI 1* has ~(list= elt= list ...)=~. The gerbil version seems to have the
+    predicate optional.
+
+    Performance sometimes matters, so optionally we will not build and return the
+    parsed list.
+
+   #+begin_src gerbil :noweb-ref predicates
+     (def* .list=
+       ((lst) (.list= equal? lst #t))
+       ((pred-or-list list-or-bool)
+        (.list= (if (list? pred-or-list) equal? pred-or-list)
+                (if (list? pred-or-list) pred-or-list list-or-bool)
+                (if (list? pred-or-list) list-or-bool #t)))
+       ((elt= lst return-parsed?)
+        (let l= ((cs lst))
+          (if (null? cs) (return [])
+              (.let* ((c (sat (cut elt= <> (car cs))))
+                      (cs (l= (cdr cs))))
+                (if return-parsed? (cons c cs) lst))))))
+   #+end_src
+
+   The variable args allow us to decide what we want.
+  
+   #+begin_src gerbil :noweb-ref test-.list=
+     (def test-.list=
+       (.let* (
+              ;; the default is char=?
+              (lst (.list= '(#\a #\s)))
+              ;; If we have a list, we can parse that
+              (the-list (return '(#\d)))
+              ;; if an arg after the list is #f, we don't collect the parsed list,
+              ;; and return the list we passed
+              (also-the-list (.list= the-list #f))
+              ;; If the first argument is a predicate, use that on the chars.
+              (case-in (.list= char-ci=? '(#\F #\G)))
+              ;; same thing for the #f
+              (the-case-in (return '(#\H #\J)))
+              (also-the-case-in (.list= char-ci=? the-case-in #f)))
+
+
+         [lst the-list also-the-list case-in the-case-in also-the-case-in]))
+
+     (let (r (test-.list= "asdfghjkl;"))
+       (match r
+         ([[res . Str]]
+          (check Str => (String 7 "asdfghjkl;"))
+          (match res
+            ([lst the-list also-the-list case-in the-case-in also-the-case-in]
+             (check lst => '(#\a #\s))
+             (check the-list => '(#\d))
+             (check-eq? the-list also-the-list)
+             (check case-in => '(#\f #\g))
+             (check also-the-case-in => '(#\H #\J))
+             (check-eq? the-case-in also-the-case-in))))))
+
+   #+end_src
+
+
+*** ~.string[-ci]=[?]~, ~:P~ is not the only way to test strings.
+
+    We just made ~:P~, and it has within it a parser for a string.
+
+    #+begin_src gerbil
+   (@expand1 (:P string: "asd"))
+   ;; => 
+   ;; (let* ((#:g20770 "asd") (#:g20771 '(#\a #\s #\d)))
+   ;;   (let str? ((#:g20772 #:g20771))
+   ;;     (if (null? #:g20772)
+   ;;         (return #:g20770)
+   ;;         (bind (:P char: (car #:g20772)) (lambda _ (str? (cdr #:g20772)))))))
+ #+end_src
+
+    So, the easy way to create ~.string=?~ is by using it.
+
+    #+begin_src gerbil :noweb-ref predicates
+      (def (.string=? str (start #f) (end #f))
+        (:P string:
+            (if (not (or start end)) str
+                (substring
+                 str (or start 0) (or end (string-length str))))))
+   #+end_src
+
+   Now, that's a really nice thing to have around, especially when we want to
+   return a parser and not a string, which we did specifically avoid after all.
+
+   But at the same time, we may want something like case-insensitivity, which is
+   the primary use of this. We may want to return the string parsed, not the
+   string predicated towards.
+
+   ~.list=~ to the rescue,  to father ~.string=~ mating with ~:Pstring=~.
+
+   ~:Pstring=~ breaks it up into keywords. Just like we did for ~.let*~.
+
+ #+begin_src gerbil :noweb-ref predicates
+   (def (:Pstring= str pred: (pred char=?) start: (start #f) end: (end #f)
+                   return-parsed: (r? #t))
+     (def lst (string->list
+               (if (or (not (or start end))
+                       (and (eqv? start 0) (not end)))
+                str
+                (substring str (or start 0) (or (and (number? end) end) (string-length str))))))
+
+     (.let* (l (.list= pred lst r?))
+       (if r? (list->string l) str)))
+ #+end_src
+
+   Just like ~.list=~, we'll have the arg types determine what is passed. 
+
+ #+begin_src gerbil :noweb-ref predicates
+   (def (.string= pred-or-str (str-or-n-or-b (void))
+                  (n-or-b (void))
+                  (en-or-b (void))
+                  (r? (void)))
+    (let ((str (if (string? pred-or-str) pred-or-str str-or-n-or-b))
+          (pred (if (string? pred-or-str) char=? pred-or-str))
+          (start (if (number? str-or-n-or-b) str-or-n-or-b
+                     (if (number? n-or-b) n-or-b (if (number? en-or-b) en-or-b #f))))
+          (end (if (string? pred-or-str)
+                 (if (number? str-or-n-or-b)
+                   n-or-b
+                   (if (number? en-or-b) en-or-b #f))
+                 #f))
+          (r? (if (boolean? r?) r?
+                  (if (boolean? en-or-b) en-or-b
+                      (if (boolean? n-or-b) n-or-b
+                          (if (boolean? str-or-n-or-b) str-or-n-or-b #t))))))
+        (:Pstring= str pred: pred start: start end: end return-parsed: r?)))
+ #+end_src
+
+  #+begin_src gerbil :noweb-ref test-.string=
+    (def test-.string=
+      (.let* (
+             ;; the default is char=?
+             (str (.string= "as"))
+             ;; If we have a string, we can parse that
+             (the-string (return "d"))
+             ;; if an arg after the string is #f, we don't collect the parsed list,
+             ;; and return the string we passed
+             (also-the-string (.string= the-string #f))
+             ;; If the first argument is a predicate, use that on the chars.
+             (case-in (.string= char-ci=? "FG"))
+             ;; same thing for the #f
+             (the-case-in (return "HJ"))
+             (also-the-case-in (.string= char-ci=? the-case-in #f))
+             (start-sub (.string=  "1111111kl;" 7))
+             (the-sub (return "01aa"))
+             (also-the-sub (.string= the-sub 1 2 #f))
+             (final-sub (return "asd234"))
+             (also-final-sub (.string= char=? final-sub 3 #f)))
+
+
+        [str the-string also-the-string case-in the-case-in also-the-case-in
+             start-sub the-sub also-the-sub final-sub also-final-sub]))
+
+    (let (r (test-.string= "asdfghjkl;1234"))
+      (match r
+        ([[res . Str]]
+         (check Str => (String 14 "asdfghjkl;1234"))
+         (match res
+           ([str the-string also-the-string case-in the-case-in also-the-case-in
+                 start-sub the-sub also-the-sub final-sub also-final-sub ]
+            (check str => "as")
+            (check the-string => "d")
+            (check-eq? the-string also-the-string)
+            (check case-in => "fg")
+            (check also-the-case-in => "HJ")
+            (check-eq? the-case-in also-the-case-in)
+            (check start-sub => "kl;")
+            (check-eq? the-sub also-the-sub)
+            (check-eq? final-sub also-final-sub))))))
+
+  #+end_src
+
+**** ~.string-ci=?~ and friends.
+
+     Case insensitivity was the whole point. 
+
+ #+begin_src gerbil :noweb-ref predicates
+   (def (.string-ci=? str . args) (apply .string= char-ci=? str args))
+ #+end_src
+
+    As a matter of fact, that can be used to make ~string>~ and the like, which
+    may happen here at some point.
+
+*** ~ci=?~. Case insensitivity arises a lot.
+
+    We often want to know if something is case insensitively match. This is just a short-form.
+
+    #+begin_src gerbil :noweb-ref predicates 
+      (def (ci=? t)
+        (cond ((char? t) (.char-ci=? t))
+              ((string? t) (.string-ci=? t))
+              ((.list? t) (.list= char-ci=? t))))
+    #+end_src
+
+** ~.cons[*]~, ~.[make-][list|string]~, ~.[list|string]->[string|number]~
+
+   #+begin_src gerbil :noweb-refs .make-things
+     (def (.cons p q) (.let* ((x p) (y q)) (cons x y)))
+
+     (def (.list p . ps)
+       (.let* ((x p) (xs (if (null? ps) (return ps) (apply .list ps))))
+         (cons x xs)))
+
+     (def (.make-list count (fill (item)))
+       (if (zero? count) (return [])
+           (.let* ((x fill) (xs (.make-list (1- count) fill))) [x . xs])))
+
+     (def (.list->string p) ((liftP list->string) p))
+
+     (def (.string p . ps) (.list->string (apply .list p ps)))
+
+     (def (.make-string count (fill (item))) (.list->string (.make-list count fill)))
+
+     (def (.string->number p) ((liftP string->number) p))
+   #+end_src
+
+** ~.not~ and ~peek~
+
+   Because we have ~.or~ and ~sat~,  creating a simple ~.not~ is trivial.
+
+   #+begin_src gerbil :noweb-ref 
+     (def (.not p)
+       (let (no (gensym)) (sat (cut eq? <> no) (.or p (return no)))))
+   #+end_src
+
+   #+begin_src gerbil
+     (check (run (.begin (.not "asd") #t) "sdf") => #t)
+     (check (run (.begin (.not "asd") #t) "asd") => #f)
+     (check ((.begin (.not "asd") #t) "asd") => [])
+   #+end_src
+
+   That can be used to create a ~peek~ or *lookahead* parser. Because ~.not~
+   fails when it runs, that means it also backtracks. So, when ~.not~ fails,
+   ~peek~ is successful.
+
+   #+begin_src gerbil
+     (def (peek p)
+       (def npek (gensym))
+       (def (peeked? v) (not (eq? v npek)))
+       (.let* ((peek? npek)
+               (_ (.or (.let* (r p) (set! peek? r) FAIL) (void))))
+         (sat peeked? (return peek?))))
+   #+end_src
+   
+* Buffer API
+
+This library was created because of my first attempt at parsing Org
+Mode [fn:org] and a decade of discovery. Org Mode is an Emacs mode, which has
+buffers, not strings.
+
+When porting the Org Element API over to gerbil[fn:gerborg], there's a
+signifcant amount of cribbing things. This helps us be a close translation.
+
+
+** ~(point)/POINT~ and ~goto-char~
+
+   In Emacs it's a function, as so it is here as well. I think a lot of my
+   "parsers-are-functions-not-variables" comes from Lisp-N's like Common Lisp
+   and Emacs Lisp. Still getting used to scheme, and so ~NEED-TO-YELL. :P 
+
+   #+begin_src gerbil :noweb-ref point
+     (defgeneric input-point (lambda _ 0))
+     (defmethod (input-point (s String)) (String-point s))
+
+     (def POINT (lambda (inp) [[(input-point inp). inp]]))
+     (def (point) POINT)
+   #+end_src
+
+   #+begin_src gerbil
+     (check (caar (POINT "asd")) => 0))
+     (check (caar ((.begin ITEM (item) (point)) "asd")) => 2))
+   #+end_src
+
+   #+begin_src gerbil :noweb-ref goto-char
+     (defgeneric input-goto-char
+       (lambda (input pos) (input-goto-char (String pos input))))
+
+     (defmethod (input-goto-char (inp String) (pos <t>))
+       (match inp ((String p i) [`(pos . ,(String pos i))])))
+
+     (def (goto-char n) (cut input-goto-char <> n))
+   #+end_src
  
+
+
+   #+begin_src gerbil
+     (check (caar ((.begin (goto-char 2) (item)) "asd")) => #\d))
+     (check (caar ((.begin ITEM (item) (point)) "asd")) => 2))
+   #+end_src
+
+
+
+* Lexical Parsing: string->tokens->AST
+
+  To parse a language, items are divided into lexical tokens, which are then
+  parsed into an *Abstract Syntax Tree(AST)*. 
+
+  #+begin_src gerbil
+    (defstruct token (start end type value) transparent: #t)
+  #+end_src
+
+  The ECMAScript Standard defines the main lexical token, ~InputElementDiv~.
+
+  #+begin_quote
+  [[InputElementDiv][InputElementDiv]]::
+    [[WhiteSpace][WhiteSpace]]
+    [[LineTerminator][LineTerminator]] 
+    [[Comment][Comment]]
+    [[CommonToken][CommonToken]]
+    [[DivPunctuator][DivPunctuator]]
+    [[RightBracePunctuator][RightBracePunctuator]]
+ #+end_quote
+
+#+begin_src gerbil
+  (defstruct (input-element-div token) ())
+  (def WhiteSpace (.or #\tab #\space))
+  (def LineTerminator #\newline)
+  (def Comment
+    (.begin "//" (.list->string (many (sat (? (not (cut char=? <> #\newline))))))))
+  (def DivPunctuator (.or #\/ "/="))
+  (def RightBracePunctuator #\})
+#+end_src
+  
+
+#+begin_quote
+ [[CommonToken][CommonToken]]::
+ [[IdentifierName][IdentifierName]]
+ [[Punctuator][Punctuator]]
+ [[NumericLiteral][NumericLiteral]]
+ [[StringLiteral][StringLiteral]]
+#+end_quote
 * Primitive 
   
 #+begin_src gerbil :tangle "primitive.ss" :noweb yes
@@ -2105,9 +2405,6 @@ have the largest block returned.
 
   (def (.string-ci=? str (p? #f))
     (.string=? str p? char-ci=?))
-
-
-
 #+end_src
 
 * Treat it like a buffer 
@@ -2172,20 +2469,48 @@ Our buffer starts at 0.
   <<bind>>
 
   <<.let*>>
-
-  <<sat>>
-
+  
   <<++>>
 
-  <<c-for-rep>>
+  <<lazy+>>
 
-  <<sepby>>
+  <<.first>>
 
-  <<predicates>>
+  
 
-  <<some>>
+  <<point>>
+
+  <<goto-char>>
+
+
+
 #+end_src
 
+** ~load-simple.ss~
+   #+begin_src gerbil :tangle load-simple.ss :noweb yes
+     <<sat>>
+
+     <<liftP>>
+
+     <<some-and-many>>
+     <<some1>>
+     <<many1>>
+
+     <<.any>>
+
+     <<.or-and-+++>>
+
+     <<sepby>>
+
+     <<predicates>>
+     
+     <<meaningful-seps>>
+
+     <<begins>>
+
+     <<.make-things>>
+
+   #+end_src
 ** ~test-parser.ss~
 #+begin_src gerbil :noweb yes :tangle test-parser.ss
    (import :std/test
@@ -2216,6 +2541,11 @@ Our buffer starts at 0.
 
 
 * footnotes	 
+
+[fn:gerborg] https://github.com/drewc/gerborg 
+
+[fn:org] ~cl-org-mode~ was mine, see
+https://orgmode.org/worg/org-tools/index.html
 
 
 [fn:fokker] Fokker, Jeroen. 1995 (May). Functional parsers. Lecture notes of the
