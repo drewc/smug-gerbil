@@ -141,6 +141,9 @@
 
 
 *** ~(item)~ and ~ITEM~, what makes this a parser.
+    :PROPERTIES:
+    :CUSTOM_ID: ITEM
+    :END:
 
      A Parser for Things is a function from Strings to Lists of Pairs of Things
      and Strings. Usually, we care about the characters is a string as
@@ -824,11 +827,11 @@ So, using ~many~, We'll make a parser for an *IdentifierName*. It must start
 with a letter, then it can have numbers.
 
 #+begin_src gerbil
-  (def IdentifierName
+  )(def IdentifierName
     (.let* ((x (sat char-alphabetic?))
             (xs (many (sat (? (or char-alphabetic? char-numeric?
                                   (cut char=? <> #\_)))))))
-      (list->string [x . xs])))
+      (list->string [x . xs]))
 
   ;; (IdentifierName "A_123")
   ;; =>
@@ -1951,6 +1954,18 @@ signifcant amount of cribbing things. This helps us be a close translation.
     (defstruct token (start end type value) transparent: #t)
   #+end_src
 
+#+begin_src gerbil
+  (defrules Token ()
+    ((_ name) (.let* ((s (point))
+                      (p name)
+                      (e (point)))
+                (return [s e 'name p])))
+    ((macro name names ...) (.or (macro name)
+                             (macro names ...)))
+    (_ FAIL))
+
+#+end_src
+
   The ECMAScript Standard defines the main lexical token, ~InputElementDiv~.
 
   #+begin_quote
@@ -1963,8 +1978,8 @@ signifcant amount of cribbing things. This helps us be a close translation.
     [[RightBracePunctuator][RightBracePunctuator]]
  #+end_quote
 
+
 #+begin_src gerbil
-  (defstruct (input-element-div token) ())
   (def WhiteSpace (.or #\tab #\space))
   (def LineTerminator #\newline)
   (def Comment
@@ -1981,6 +1996,302 @@ signifcant amount of cribbing things. This helps us be a close translation.
  [[NumericLiteral][NumericLiteral]]
  [[StringLiteral][StringLiteral]]
 #+end_quote
+
+
+#+begin_src gerbil :noweb-ref 
+  (def IdentifierName
+      (.let* ((x (.or #\_ #\$ (sat char-alphabetic?)))
+              (xs (many (sat (? (or char-alphabetic? char-numeric?
+                                    (cut char=? <> #\_)))))))
+        (list->string [x . xs])))
+  (def Punctuator
+    (.or #\{ #\( #\) #\[ #\] "..." #\. #\; #\,"<<=" "<<" "<=" "<"
+         ">>>=" ">>>" ">>=" ">>" ">=" ">" "===" "==" "=>" "=" "!==" "!="
+         "++" "+=" "+" "--" "-=" "-" "**=" "*=" "**" "*" "%=" "%" "&&"
+         "&=" "&" "||" "|=" "|" "^=" "^" "!==" "!=" "!" #\~ #\? #\:))
+  (def NumericLiteral (.list->string (many1 (sat char-numeric?))))
+  (def StringLiteral
+    (let (Char (.or (sat (? (not (cut char=? <> #\"))))
+                     (.begin #\\ (item))))
+      (bracket #\" (.list->string (many Char)) #\")))
+#+end_src
+
+Using that, we create a function which parses those.
+
+#+begin_src gerbil
+  (defstruct (input-element-div token) ())
+  (def InputElementDiv
+    (.let* (args (Token WhiteSpace
+                       LineTerminator
+                       Comment
+                       IdentifierName
+                       Punctuator
+                       NumericLiteral
+                       StringLiteral
+                       DivPunctuator
+                       RightBracePunctuator))
+      (apply make-input-element-div args)))
+#+end_src
+
+Now the text is divided into tokens, or an error if that character is untokenable.
+
+#+begin_src gerbil
+  (defstruct tokens (vector) transparent: #t)
+  (def (tokenize str)
+    (def token-error (.let* (c  (item)) (error c " Invalid Token")))
+    (def .tokenize
+      (.let* (ts (many (.or InputElementDiv token-error)))
+        (return (tokens (list->vector ts)))))
+    (run .tokenize str))
+#+end_src
+
+** Parsing ~tokens~, a vector of ~token~'s.
+
+   Let us ~tokenize~ a string that is a function definition. What we end up with is a vector of tokens.
+   #+begin_src gerbil
+     (def fdef-tokens (tokenize "function foo(bar,baz) { baz = bar ;\n return baz; }"))
+
+     (check (vector-map token-value (tokens-vector fdef-tokens))
+            => #("function" #\space "foo" #\( "bar" #\, "baz" #\) #\space #\{ #\space "baz" #\space "=" #\space "bar" #\space #\; #\newline #\space "return" #\space "baz" #\; #\space #\}))
+
+   #+end_src
+
+   Our parser no longer cares about whitespace, so we'll get rid of it.
+
+   #+begin_src gerbil
+     (def (remove-WhiteSpace! tokens)
+       (tokens-vector-set!
+        tokens (list->vector (filter (lambda (t) (not (eq? (token-type t) 'WhiteSpace)))
+                                     (vector->list (tokens-vector fdef-tokens))))))
+
+     (remove-WhiteSpace! fdef-tokens)
+
+     (check (vector-map token-value (tokens-vector fdef-tokens))
+            => #("function" "foo" #\( "bar" #\, "baz" #\) #\{ "baz" "=" "bar" #\; #\newline "return" "baz" #\; #\}))
+
+   #+end_src
+
+   Now we have a ~tokens~ struct which has a vector of ~tokens~. It would be
+   nice to use our parser to parse ~tokens~, where [[#ITEM][~(item)~]] is a ~token~.
+
+   #+begin_src gerbil
+     (defmethod (input-item (ts tokens)) (input-item (tokens-vector ts)))
+   #+end_src
+
+   #+begin_src gerbil
+     (check (token-value (run (item) fdef-tokens)) => "function")
+   #+end_src
+
+   Using that, some parsers for tokens are set up.
+
+   #+begin_src gerbil
+     (def (.token-value) (.let* (t (item)) (return (token-value t))))
+
+     (def (current-token) (peek (item)))
+
+     (def (current-token-value) (.let* (t (current-token)) (return (token-value t))))
+
+     (def (parser-token-value? p pv)
+       (.let* (t p)
+         (let* ((v (token-value t))
+                (str (if (string? v) v (string v))))
+           (sat identity (return (run pv str))))))
+
+     (def (token-value? v) (parser-token-value? (item) v))
+
+     (def (current-token-value? p)
+       (.let* (t (current-token))
+         (let* ((v (token-value t))
+                (str (if (string? v) v (string v))))
+           (sat identity (return (run p str))))))
+
+     (def (parser-token-type? p sym)
+       (.let* (t (current-token)) (sat (cut eq? sym <>) (return (token-type t)))))
+     (def (current-token-type? sym) (parser-token-type? (current-token) sym))
+
+     (def (token-type? sym) (parser-token-type? (item) sym))
+
+     (def (next-token) (.begin (item) (current-token)))
+     (def (prev-token) (.let* (p (point)) (.begin (goto-char (1- p)) (current-token))))
+   #+end_src
+   
+  Now the syntax.
+  
+
+  #+begin_quote
+   [[https://tc39.es/ecma262/#prod-FunctionExpression][FunctionExpression]]:
+      function [[BindingIdentifier][BindingIdentifier]]opt ([[FormalParameters][FormalParameters]]) {[[FunctionBody][FunctionBody]]}
+   #+end_quote
+#+begin_src gerbil
+
+  (def BindingIdentifier(.begin (current-token-type? 'IdentifierName) (.token-value))
+
+  (def FormalParameters
+    (sepby (.begin (current-token-type? 'IdentifierName)
+                   (.token-value))
+           (token-value? #\,)))
+#+end_src
+
+In our case the function body is a collection of three things: an
+~AssignmentExpression~, an ~EmptyStatement~, and a ~ReturnStatement~.
+
+
+     #+begin_quote
+  [[AssignmentExpression][AssignmentExpression]]:
+    [[LeftHandSideExpression][LeftHandSideExpression]]=[[AssignmentExpression][AssignmentExpression]]
+
+  [[LeftHandSideExpression][LeftHandSideExpression]]:
+    [[NewExpression][NewExpression]]
+
+  [[NewExpression][NewExpression]]:
+    [[MemberExpression][MemberExpression]]
+    new [[NewExpression][NewExpression]] 
+
+ [[MemberExpression][MemberExpression]]:
+   [[PrimaryExpression][PrimaryExpression]]
+
+ [[PrimaryExpression][PrimaryExpression]]:
+  [[IdentifierReference][IdentifierReference]]
+
+  [[IdentifierReference][IdentifierReference]]
+    [[Identifier][Identifier]] 
+
+  [[Identifier][Identifier]]:
+    [[IdentifierName][IdentifierName]] but not [[ReservedWord][ReservedWord]] 
+
+
+  [[EmptyStatement][EmptyStatement]]:
+     ;
+
+
+   [[ReturnStatement][ReturnStatement]]:
+     return; 
+     return[no [[LineTerminator][LineTerminator]] here][[Expression][Expression]];
+
+  Expression: PrimaryExpression
+
+     #+end_quote
+
+As usual, we start from the end. Note that there is more to each token than what
+is presented up above, which is why we are doing them all.
+
+     #+begin_src gerbil :noweb-ref reservedword-lex
+       (def ReservedWord
+         (.or
+           "await" "break" "case" "catch" "class" "const" "continue" "debugger"
+           "default" "delete" "do" "else" "enum" "export" "extends" "false" "finally"
+           "for" "function" "if" "import" "in" "instanceof" "new" "null" "return"
+           "super" "switch" "this" "throw" "true" "try" "typeof" "var" "void" "while"
+           "with" "yield"))
+     #+end_src
+
+*** Expressions 
+      #+begin_src gerbil
+        (defstruct expression ())
+
+        (defstruct (identifier expression) (name) transparent: #t) 
+        (def Identifier
+          (.begin (peek (token-type? 'IdentifierName))
+                  (peek (token-value? (.not ReservedWord)))
+                  (.let* (name (.token-value))
+                    (return (identifier name)))))
+
+        (defstruct (identifier-reference expression) (identifier) transparent: #t)
+        (def IdentifierReference
+          (.let* (id Identifier) (return (identifier-reference id))))
+
+        (def PrimaryExpression IdentifierReference)
+        (def MemberExpression PrimaryExpression)
+        (def NewExpression MemberExpression)
+        (def LeftHandSideExpression NewExpression)
+
+        (defstruct (assignment-expression expression) (lhs op rhs) transparent: #t)
+
+        (def AssignmentExpression
+          (.let* ((lhs LeftHandSideExpression) (op (token-value? #\=))
+                  (rhs PrimaryExpression))
+            (return (assignment-expression lhs op rhs))))
+
+
+        (def Expression (.or PrimaryExpression AssignmentExpression))
+      #+end_src
+
+*** Statements
+
+    #+begin_quote
+  [[https://tc39.es/ecma262/#prod-Statement][Statement]]:
+   [[EmptyStatement][EmptyStatement]]
+   [[ExpressionStatement][ExpressionStatement]]
+   [[ReturnStatement][ReturnStatement]]
+    #+end_quote
+
+        #+begin_src gerbil 
+          (defstruct statement ())
+
+          (defstruct (empty-statement statement) ())
+          (def EmptyStatement (.begin (token-value? #\;) (return (empty-statement))))
+
+          (defstruct (return-statement statement) (expression) transparent: #t)
+
+          (def ReturnStatement
+            (.let* ((expression (.begin (peek (token-type? 'IdentifierName))
+                                        (token-value? "return")
+                                        (.or Expression #f)))
+                    (_ (token-value? #\;)))
+              (return (return-statement expression))))
+
+          (defstruct (expression-statement statement) (expression) transparent: #t)
+          (def ExpressionStatement (.let* (e Expression) (return (expression-statement e))))
+
+          (def Statement (.or EmptyStatement ReturnStatement ExpressionStatement))
+        #+end_src
+
+*** Function Body 
+
+    #+begin_quote
+     [[https://tc39.es/ecma262/#prod-FunctionBody][FunctionBody]]: 
+       [[https://tc39.es/ecma262/#prod-FunctionStatementList][FunctionStatementList]]
+     [[https://tc39.es/ecma262/#prod-FunctionStatementList][FunctionStatementList]]: 
+      [[https://tc39.es/ecma262/#prod-StatementList][StatementList]]opt
+
+ 
+    #+end_quote
+
+    #+begin_src gerbil
+      (def StatementList (many1 Statement))
+      (def FunctionStatementList (.or StatementList #f))
+      (def FunctionBody FunctionStatementList)
+    #+end_src
+
+    
+*** Function Expression
+
+  #+begin_quote
+   [[https://tc39.es/ecma262/#prod-FunctionExpression][FunctionExpression]]:
+      function [[BindingIdentifier][BindingIdentifier]]opt ([[FormalParameters][FormalParameters]]) {[[FunctionBody][FunctionBody]]}
+   #+end_quote
+  
+  #+begin_src gerbil
+    (defstruct (function-expression expression) (identifier parameters body) transparent: #t)
+    (def FunctionExpression
+      (.let* ((id (.begin (peek (token-type? 'IdentifierName))
+                          (token-value? "function")
+                          (.or BindingIdentifier #f)))
+              (params (bracket (token-value? #\()
+                               FormalParameters
+                               (token-value? #\))))
+              (body #f #;(bracket (token-value? #\{)
+                             FunctionBody
+                             (token-value? #\}))))
+        (return (function-expression id params body))))
+
+    #+end_src
+
+
+
+
+
+
 * Primitive 
   
 #+begin_src gerbil :tangle "primitive.ss" :noweb yes
