@@ -142,7 +142,7 @@
 
 *** ~(item)~ and ~ITEM~, what makes this a parser.
     :PROPERTIES:
-    :CUSTOM_ID: ITEM
+    :CUSTOM_ID: ITEM_and_item
     :END:
 
      A Parser for Things is a function from Strings to Lists of Pairs of Things
@@ -605,7 +605,7 @@ solved first, and the last latter.
 
   Using  ~:P~ for let* really helps to clear up the syntax
 
-  #+begin_src gerbil :noweb-ref .let*
+  #+begin_src gerbil 
     (defsyntax (.let* stx)
       (syntax-case stx ()
        ;;; First the hidden bind: to:
@@ -1249,7 +1249,7 @@ use, easy to view, and, ehem, easy to debug.
       (def (some p) (++ [] (.let* ((x p) (xs (some p))) (return [x . xs]))))
     #+end_src
     #+begin_src gerbil :noweb-ref some1
-      (def (some1 p) (.let ((x p) (xs (some p))) (return [x . xs])))
+      (def (some1 p) (.let* ((x p) (xs (some p))) (return [x . xs])))
     #+end_src
 
     Using it to redefine ~.read-line~, we start to get closer to code and
@@ -1553,7 +1553,7 @@ use, easy to view, and, ehem, easy to debug.
   
   To this point we've use ~caar~ to see the first result of a parser. There are
   better ways to go about it.
-  #+begin_src gerbil
+  #+begin_src gerbil :noweb-ref run
     (def (run p inp (fail-object #f))
         (let lp ((v ((:P p) inp)))
           (cond ((null? v) fail-object)
@@ -1580,18 +1580,27 @@ use, easy to view, and, ehem, easy to debug.
    scheme see it right now.
 
    #+begin_src gerbil :noweb-ref begins
-     (defrules .begin ()
-         ((macro p)
-          (.let* (x p) (return x)))
-         ((macro p ps ...)
-          (.let* (_ p) (macro ps ...))))
+     ;; (defrules .begin ()
+     ;;     ((macro p)
+     ;;      (.let* (x p) (return x)))
+     ;;     ((macro p ps ...)
+     ;;      (.let* (_ p) (macro ps ...))))
 
+     (defsyntax (.begin stx)
+       (def ret (gensym))
+       (syntax-case stx ()
+         ((macro P)
+          (datum->syntax #'macro `(.let* (,ret ,(syntax->datum #'P))
+                                    (return ,ret))))
+         ((macro P Ps ...)
+          (datum->syntax #'macro `(.let* (_ ,(syntax->datum #'P))
+                                              (.begin ,@(syntax->datum #'(Ps ...))))))))
      (defrules .begin0 ()
        ((macro p)
         (.let* (x p) (return x)))
        ((macro p ps ...)
         (.let* ((x p) (_ (.begin (macro ps ...)))) (return x))))
-     
+
    #+end_src
   
    That allows even short syntactic declarations, which is a large part of the
@@ -1614,6 +1623,39 @@ use, easy to view, and, ehem, easy to debug.
 
 #+begin_src gerbil
   (check (caar (((liftP list->string) (many (item))) "asd")) => "asd")
+#+end_src
+
+** ~values~ and ~.let*~
+
+  #+begin_src gerbil :noweb-ref .let*
+    (defsyntax (.let* stx)
+      (syntax-case stx ()
+       ;;; First the hidden bind: to: with values
+        ((macro bind: (values . vs) to: PV body ...)
+         (let (id (gensym))
+           (datum->syntax #'macro
+             `(.let* (,id ,(syntax->datum #'PV))
+                (let ((values . ,(syntax->datum #'vs)) ,id)
+                  ,@(syntax->datum #'(body ...)))))))
+        ;;; Now the still hidden bind: to:
+        ((macro bind: id to: PV body ...)
+         (datum->syntax
+             #'macro
+           `(bind (:P ,(syntax->datum #'PV))
+                  (lambda (,(syntax->datum #'id)) ,@(syntax->datum #'(body ...))))))
+      ;;; And with the ((v ...) (w ...)) type that recursively expands.
+        ((macro ((id value) rest ...) body ...)
+         #'(macro bind: id to: value
+                  (macro (rest ...) body ...)))
+        ((macro (id value) body ...) #'(macro ((id value)) body ...))
+        ((macro _ body ...)
+         #'(begin body ...))))
+  #+end_src
+
+** ~skip~, skip to me lex my darling. 
+
+#+begin_src gerbil :noweb-ref skip
+  (def (skip p) (.or (.let* (_ p) (.or (skip p) #t)) #f))
 #+end_src
 
 ** ~.[char|list|string|ci]=[?]~ and predicate friends. 
@@ -1840,16 +1882,16 @@ use, easy to view, and, ehem, easy to debug.
 
     We often want to know if something is case insensitively match. This is just a short-form.
 
-    #+begin_src gerbil :noweb-ref predicates 
+    #+begin_src gerbil :noweb-ref ci=? 
       (def (ci=? t)
         (cond ((char? t) (.char-ci=? t))
               ((string? t) (.string-ci=? t))
-              ((.list? t) (.list= char-ci=? t))))
+              ((list? t) (.list= char-ci=? t))))
     #+end_src
 
 ** ~.cons[*]~, ~.[make-][list|string]~, ~.[list|string]->[string|number]~
 
-   #+begin_src gerbil :noweb-refs .make-things
+   #+begin_src gerbil :noweb-ref .make-things
      (def (.cons p q) (.let* ((x p) (y q)) (cons x y)))
 
      (def (.list p . ps)
@@ -1873,7 +1915,7 @@ use, easy to view, and, ehem, easy to debug.
 
    Because we have ~.or~ and ~sat~,  creating a simple ~.not~ is trivial.
 
-   #+begin_src gerbil :noweb-ref 
+   #+begin_src gerbil :noweb-ref .not 
      (def (.not p)
        (let (no (gensym)) (sat (cut eq? <> no) (.or p (return no)))))
    #+end_src
@@ -1888,7 +1930,7 @@ use, easy to view, and, ehem, easy to debug.
    fails when it runs, that means it also backtracks. So, when ~.not~ fails,
    ~peek~ is successful.
 
-   #+begin_src gerbil
+   #+begin_src gerbil :noweb-ref peek
      (def (peek p)
        (def npek (gensym))
        (def (peeked? v) (not (eq? v npek)))
@@ -1946,15 +1988,18 @@ signifcant amount of cribbing things. This helps us be a close translation.
 
 
 * Lexical Parsing: string->tokens->AST
+  :PROPERTIES:
+  :header-args: :noweb-ref lexical-parsing
+  :END:
 
   To parse a language, items are divided into lexical tokens, which are then
   parsed into an *Abstract Syntax Tree(AST)*. 
 
-  #+begin_src gerbil
+  #+begin_src gerbil :noweb-ref tokens
     (defstruct token (start end type value) transparent: #t)
   #+end_src
 
-#+begin_src gerbil
+#+begin_src gerbil :noweb-ref tokens
   (defrules Token ()
     ((_ name) (.let* ((s (point))
                       (p name)
@@ -1998,7 +2043,7 @@ signifcant amount of cribbing things. This helps us be a close translation.
 #+end_quote
 
 
-#+begin_src gerbil :noweb-ref 
+#+begin_src gerbil
   (def IdentifierName
       (.let* ((x (.or #\_ #\$ (sat char-alphabetic?)))
               (xs (many (sat (? (or char-alphabetic? char-numeric?
@@ -2035,8 +2080,9 @@ Using that, we create a function which parses those.
 
 Now the text is divided into tokens, or an error if that character is untokenable.
 
-#+begin_src gerbil
+#+begin_src gerbil :noweb-ref tokens
   (defstruct tokens (vector) transparent: #t)
+
   (def (tokenize str)
     (def token-error (.let* (c  (item)) (error c " Invalid Token")))
     (def .tokenize
@@ -2045,6 +2091,16 @@ Now the text is divided into tokens, or an error if that character is untokenabl
     (run .tokenize str))
 #+end_src
 
+#+begin_src gerbil :noweb-ref tokens
+  (defstruct tokens (vector) transparent: #t)
+
+  (def (tokenize str)
+    (def token-error (.let* (c  (item)) (error c " Invalid Token")))
+    (def .tokenize
+      (.let* (ts (many (.or InputElementDiv token-error)))
+        (return (tokens (list->vector ts)))))
+    (run .tokenize str))
+#+end_src
 ** Parsing ~tokens~, a vector of ~token~'s.
 
    Let us ~tokenize~ a string that is a function definition. What we end up with is a vector of tokens.
@@ -2062,7 +2118,7 @@ Now the text is divided into tokens, or an error if that character is untokenabl
      (def (remove-WhiteSpace! tokens)
        (tokens-vector-set!
         tokens (list->vector (filter (lambda (t) (not (eq? (token-type t) 'WhiteSpace)))
-                                     (vector->list (tokens-vector fdef-tokens))))))
+                                     (vector->list (tokens-vector tokens))))))
 
      (remove-WhiteSpace! fdef-tokens)
 
@@ -2124,7 +2180,7 @@ Now the text is divided into tokens, or an error if that character is untokenabl
    #+end_quote
 #+begin_src gerbil
 
-  (def BindingIdentifier(.begin (current-token-type? 'IdentifierName) (.token-value))
+  (def BindingIdentifier (.begin (current-token-type? 'IdentifierName) (.token-value)))
 
   (def FormalParameters
     (sepby (.begin (current-token-type? 'IdentifierName)
@@ -2161,7 +2217,8 @@ In our case the function body is a collection of three things: an
 
 
   [[EmptyStatement][EmptyStatement]]:
-     ;
+     ; 
+    LineTerminator
 
 
    [[ReturnStatement][ReturnStatement]]:
@@ -2175,7 +2232,7 @@ In our case the function body is a collection of three things: an
 As usual, we start from the end. Note that there is more to each token than what
 is presented up above, which is why we are doing them all.
 
-     #+begin_src gerbil :noweb-ref reservedword-lex
+     #+begin_src gerbil
        (def ReservedWord
          (.or
            "await" "break" "case" "catch" "class" "const" "continue" "debugger"
@@ -2213,7 +2270,7 @@ is presented up above, which is why we are doing them all.
             (return (assignment-expression lhs op rhs))))
 
 
-        (def Expression (.or PrimaryExpression AssignmentExpression))
+        (def Expression (.or AssignmentExpression PrimaryExpression))
       #+end_src
 
 *** Statements
@@ -2229,7 +2286,8 @@ is presented up above, which is why we are doing them all.
           (defstruct statement ())
 
           (defstruct (empty-statement statement) ())
-          (def EmptyStatement (.begin (token-value? #\;) (return (empty-statement))))
+          (def EmptyStatement (.begin (.or (token-value? #\;) (token-value? #\newline))
+                                      (return (empty-statement))))
 
           (defstruct (return-statement statement) (expression) transparent: #t)
 
@@ -2280,7 +2338,7 @@ is presented up above, which is why we are doing them all.
               (params (bracket (token-value? #\()
                                FormalParameters
                                (token-value? #\))))
-              (body #f #;(bracket (token-value? #\{)
+              (body (bracket (token-value? #\{)
                              FunctionBody
                              (token-value? #\}))))
         (return (function-expression id params body))))
@@ -2292,431 +2350,8 @@ is presented up above, which is why we are doing them all.
 
 
 
-* Primitive 
-  
-#+begin_src gerbil :tangle "primitive.ss" :noweb yes
-  (import :std/sugar :std/srfi/1 :std/lazy
-          :std/generic :std/ref)
-  (export #t)
-
-  <<return>>
-
-  <<fail>>
-
-  <<String-struct>>
-
-  <<item>>
-
-  <<p-ensure-parser>>
-
-  <<bind>>
-  
-  <<.let*>>
-
-  <<sat>>
-
-  <<++>>
-
-  <<c-for-rep>>
-
-  <<sepby>>
-
-  <<predicates>>
-
-  (def (ensure-parser p)
-    (cond
-     ((procedure? p) p)
-     ((char? p)
-      (bind (item) (lambda (x) (if (char=? x p) (return p) (fail)))))
-     ((string? p)
-      (let str ((xs (string->list p)))
-        (if (null? xs)
-          (return p)
-          (bind (item) (lambda (x) (if (char=? x (car xs)) (str (cdr xs)) (fail)))))))
-     ((or (boolean? p) (null? p)) (return p))))
-
-
-  ;; p ‘bind‘ f = \inp -> concat [f v inp’ | (v,inp’) <- p inp]
-  ;; (def (bind p f) (lambda (inp) (append-map (cut match <> ([v . inp*] ((f v) inp*)))
-  ;; ((ensure-parser p) inp))))
-
-
-  (def (bind p f)
-    (def (runPF PF pair) (match pair ([v . inp] ((PF v) inp))
-                                (else (error pair " is not a return value pair"))))
-    (lambda (inp)
-      (let lp ((r ((ensure-parser p) inp)))
-        (match r 
-          ([] [])                     
-          ([pair . rest]
-           (if (lazy? pair)
-             (lp (append (force pair) rest))
-             (let ((PFr (runPF f pair)))
-               (if (null? PFr) (lp rest)
-                   (append PFr
-                           (if (null? rest) rest
-                               (list (delay (let (vs (lp rest))
-                                              (if (void? vs) [] vs))))))))))))))
-  ;;  item = \inp -> case inp of
-  ;;              [] -> []
-  ;;              (x:xs) -> [(x,xs)]
-
-  (defstruct narrow (input start end))
-
-
-  ;; (def (item)
-  ;;   (def (str-ref thing n)
-  ;;     (string-ref (let lp ((t thing))
-  ;;                   (cond ((string? t) t)
-  ;;                         ((pair? t) (lp (cdr t)))
-  ;;                         ((narrow? t) (lp (narrow-input t)))))
-  ;;                 n))
-  ;;   (def (str-item thing n)
-  ;;     (let ((x (str-ref thing n))
-  ;;           (xs (cons (+ 1 n) thing)))
-  ;;       [[x . xs]]))
-  ;;   (lambda (input)
-  ;;     (let (inp (if (pair? input)
-  ;;                 input
-  ;;                 (cons 0 input)))
-  ;;       (try
-  ;;        (match inp
-  ;;          ([n . thing]
-  ;;           (if (and (narrow? thing)
-  ;;                    (or (< n (narrow-start thing))
-  ;;                        (>= n (narrow-end thing))))
-  ;;             []
-  ;;             (str-item thing n))))
-  ;;        (catch _ [])))))
-
-  ;; (def (item)
-  ;;   (lambda (input)
-  ;;     (let (inp (if (pair? input)
-  ;;                 input
-  ;;                 (cons 0 input)))
-  ;;       ;(match ([n . thing] inp 
-  ;;       (try
-  ;;        (let ((x (string-ref (cdr inp) (car inp)))
-  ;;              (xs (cons (+ 1 (car inp)) (cdr inp))))
-  ;;          [[x . xs]])
-  ;;        (catch _ [])))))
-
-  ;; emacs buffer like
-  (def (point) (lambda (inp) [[(if (pair? inp) (car inp) 0) . inp]])) 
-
-  (def (goto-char n) (lambda (inp) [(cons n (cons n (if (pair? inp) (cdr inp) inp)))]))
-
-  (def (narrow-to-region start end)
-    (lambda (inp) [(cons start (cons start (make-narrow inp start end)))]))
-
-  (def (widen)
-    (lambda (inp)
-      (if (and (pair? inp) (narrow? (cdr inp)))
-        (let (nimp (narrow-input (cdr inp)))
-          [(cons (narrow-end (cdr inp)) nimp) ])
-         [(cons #f inp)])))
-
-
-  (def (run p inp (or-return #f))
-    (let lp ((v ((ensure-parser p) inp)))
-      (cond ((null? v) or-return)
-            ((lazy? (car v))
-             (let (new (force (car v)))
-               (if (null? new) (lp (cdr v))
-                   (lp new))))
-            (#t (caar v)))))
-
-  ;; p ++ q = \inp -> (p inp ++ q inp)
-
-  (def (++ p q) (lambda (inp) (append ((ensure-parser p) inp) ((ensure-parser q) inp))))
-
-  ;; first p = \inp -> case p inp of
-  ;;                    [] -> []
-  ;;                    (x:xs) -> [x]
-
-  (def (.first p)
-    (lambda (inp) (let (v (p inp)) (match v ([] []) ([x . xs] [x])))))
-
-
-  ;; p +++ q = first (p ++ q)
-  ;; We are not lazy, so have to specify.
-  (def (+++ p q) (lambda (inp) (match ((ensure-parser p) inp)
-                            ([] ((ensure-parser q) inp)) (xs xs))))
-
-  (def (lazy+ p q)
-    (lambda (inp) (match ((ensure-parser p) inp)
-               ([] ((ensure-parser q) inp))
-               (xs (append xs (list (delay ((ensure-parser q) inp))))))))
-
-  (defsyntax (:parser stx)
-    (syntax-case stx ()
-      ((macro v)
-       (let* ((v (syntax->datum #'v))
-              (form
-               (cond
-                ((char? v)
-                 `(bind (item) (lambda (x) (if (char=? x ,v) (return ,v) (fail)))))
-                ((string? v)
-                 (let (lst (string->list v))
-                   `(let str ((xs ',lst))
-                     (if (null? xs)
-                       (return ,v)
-                       (bind (item) (lambda (x)
-                                      (if (char=? x (car xs)) (str (cdr xs))
-                                          (fail))))))))
-                (#t `(ensure-parser ,v)))))
-         (with-syntax ((P (datum->syntax #'macro form)))
-           #'P)) )))
-
-  (defsyntax (.let* stx)
-    (def (bind-form id value body)
-      `(bind ,value (lambda (,id) ,@body)))
-
-    (syntax-case stx ()
-      ((macro bind: (values . vs) to: v body ...)
-       (let* ((id (gensym)) (MV [':parser (syntax->datum #'v)])
-              (MF `(lambda (,id) (let ((values . ,(syntax->datum #'vs)) ,id)
-                              ,@(syntax->datum #'(body ...))))))
-         (with-syntax ((bf (datum->syntax #'macro ['bind MV MF])))
-           #'bf)))
-      ((macro bind: id to: value body ...)
-       (with-syntax ((bind-form (datum->syntax
-                                    #'macro
-                                  `(bind (:parser ,(syntax->datum #'value))
-                                          (lambda (,(syntax->datum #'id))
-                                            ,@(syntax->datum #'(body ...)))))))
-         #'bind-form))
-      ((macro ((id value) rest ...) body ...)
-       #'(macro bind: id to: value
-                (macro (rest ...) body ...)))
-      ((macro (id value) body ...) #'(macro ((id value)) body ...))
-      ((macro _ body ...)
-       #'(let (ret (begin body ...))
-           (if (procedure? ret) ret (return ret))))))
-#+end_src
-
-
-*** ~++~ and ~+++~ Adding simultaneous parser branches. 
-    :PROPERTIES:
-    :CUSTOM_ID: +++
-    :END:
-
-There are two primitives for adding parsers together to run in unison, ~++~ and
-~+++~. Essentially, ~++~ is non-deterministic and ~+++~ is determined.
-
-The easy way to explain is, of course, an example.
-
-#+begin_src gerbil
-  ((++ (item) (return [])) "asd") ;; => ((#\a 1 . "asd") (() . "asd"))
-  ((+++ (item) (return [])) "asd") ;; => ((#\a 1 . "asd"))
-  ((+++ (fail) (return [])) "asd") ;; => ((() . "asd"))
-#+end_src
-
- ~++~ always runs the second parser, whereas ~+++~ only runs if the first one
-fails.
-
-~many~ takes a plus combinator as its second argument, which allows us to only
-have the largest block returned.
-
 
 * Simple 
-
-** The #\. prefix
-   :PROPERTIES:
-   :CUSTOM_ID: Dot-prefix
-   :END:
-
- In some cases, the natural name for a parser conflicts with a common identifier
- in Gerbil/Scheme. Rather then shadow the symbols, I've chosen to prefix certain
- parser names with a #\. character. It also helps to distinguish parser
- returning functions from other functions.
-
-
-#+begin_src gerbil :tangle "simple.ss"
-  (import :drewc/smug/primitive
-          (for-syntax :drewc/smug/primitive)
-          (only-in :std/srfi/13 string-null?)
-          :std/srfi/1)
-  (export #t)
-
-
-  ;; sat p = item ‘bind‘ \x -> if p x then return x else fail
-  (def (sat predicate (p (item))) (bind p (lambda (x) (if (predicate x) (return x) (fail)))))
-  (def (satisfies predicate item: (item item))
-    (bind (item) (lambda (x) (if (predicate x) (return x) (fail)))))
-
-  (def (skip p) (+++ (bind p (lambda _ (+++ (skip p) (return #t)))) (return #f)))
-
-  (def (liftP function . args) 
-    (cut bind <> (lambda (v) (return (apply function v args)))))
-
-  (def (.char=? c) (sat (cut char=? <> c)))
-  (def (.char-ci=? c) (sat (cut char-ci=? <> c)))
-
-  (def (ci=? thing (ret #f))
-   (if (string? thing) (.string-ci=? thing ret) (.char-ci=? thing)))
-
-  (def (peek (p (item)))
-    (let (v (gensym))
-      (.let* (peek (return v))
-        (.or (.let* (x p) (set! peek x) (fail))
-             (.let* (_ #f) (if (eq? peek v) (fail) (return peek)))))))
-
-  (def (.begin p . ps)
-    (bind p (lambda (v) (if (null? ps) (return v) (apply .begin ps)))))
-
-  (def (.begin0 p . ps)
-    (.let* ((x p) (_ (if (null? ps) (return ps) (apply .begin ps))))
-      (return x)))
-
-
-
-  (def (.or p . ps) (+++ p (if (null? ps) (fail) (apply .or ps))))
-  (def (.any p . ps) (++ p (if (null? ps) (fail) (apply .any ps))))
-
-
-  (def (save-excursion . ps) (if (null? ps) (fail) (peek (apply .begin ps))))
-
-  (def (skip-chars-forward charbag (end #f))
-    (def lst (if (list? charbag) charbag (string->list charbag)))
-    (let sk ((ret 0))
-      (.or (.let* (p (point))
-             (if (and end (>= p end)) (return ret)
-                (.begin (sat (cut memv <> lst)) (sk (1+ ret)))))
-           (return ret))))
-
-  (def (skip-chars-backward charbag (start #f))
-    (def lst (if (list? charbag) charbag (string->list charbag)))
-    (def (skb (p #f) (ret 0))
-      (if (or (and p (zero? p)) (and start (<= start p))) (return ret)
-          (.let* (bp (goto-char (1- p)))
-            (.or (.begin (sat (cut member <> lst))
-                         (skb bp (1+ ret)))
-                 (.begin (item) (return ret))))))
-    (bind (point) skb))
-
-  (def (forward-line (count 1))
-    (.begin (many (sat (? (not (cut char=? #\newline <>)))))
-            #\newline
-            (if (> count 1) (forward-line (1- count)) (point))))
-
-  (def (beginning-of-line (count 1))
-    (def (bol p)
-      (if (and p (zero? p)) (return p)
-          (let ((bp (1- p)))
-            (.let* (c (.begin (goto-char bp) (item)))
-              (if (char=? #\newline c)
-                      (return p)
-                      (bol bp))))))
-    (.let* (_ (if (> count 1)
-                (forward-line (1- count)) #f))
-      (bind (point) bol)))
-
-  (def (end-of-line (count 1))
-    (def eol (.begin (skip (sat (? (not (cut char=? <> #\newline)))))
-                     (point)))
-    (.let* (e eol)
-      (if (> count 1)
-        (.begin (item) (end-of-line (1- count)))
-        (return e))))
-
-  (def (buffer-substring start end)
-    (peek (.begin (goto-char start) (.make-string (- end start)))))
-
-  (def (count-lines start end)
-    (save-excursion (goto-char start)
-                    (.let* (lst (.make-list (- end start) (item)))
-                        (return (count (cut char=? #\newline <>) lst)))))
-
-
-
-
-  ;; Some.
-
-  (def (some p)
-    (lazy+ (return []) (.let* ((x p) (xs (some p))) (cons x xs))))
-
-  (def (some1 p) (.let* ((x p) (xs (some p))) (cons x xs)))
-
-
-
-  ;; bracket open p close = [x | _ <- open, x <- p, _ <- close]
-
-  (def (bracket open p close) (.let* ((_ open) (x p) (_ close)) (return x)))
-
-
-  ;; many p = [x:xs | x <- p, xs <- many p] ++ [[]]
-
-  (def (many parser (plus +++))
-    (plus (.let* ((x parser) (xs (many parser plus))) (return [x . xs]))
-          (return [])))
-
-  (def (many1 p (plus +++))
-    (.let* ((x p) (xs (many p plus))) [x . xs]))
-
-  (def (at-least n parser (plus +++))
-    (plus (.let* ((x parser)
-                      (xs (at-least (- n 1) parser plus)))
-           (return [x . xs]))
-          (if (> n 0) (fail) (return []))))
-
-
-
-  ;; sepby1:: Parser a -> Parser b -> Parser [a]
-  ;; p ‘sepby1‘ sep = [x:xs | x <- p , xs <- many [y | _ <- sep , y <- p]]   
-
-  (def (sepby1 p sep (plus +++))
-    (.let* ((x p) (xs (many (.let* ((_ sep) (y p)) (return y)) plus))) 
-     (return [x . xs])))
-
-
-  (def (.cons p q) (.let* ((x p) (y q)) (cons x y)))
-
-  (def (.list p . ps)
-    (.let* ((x p) (xs (if (null? ps) (return ps) (apply .list ps))))
-      (cons x xs)))
-
-  (def (.make-list count (fill (item)))
-    (if (zero? count) (return [])
-        (.let* ((x fill) (xs (.make-list (1- count) fill))) [x . xs])))
-
-  (def (.list->string p) ((liftP list->string) p))
-
-  (def (.string p . ps) (.list->string (apply .list p ps)))
-
-  (def (.make-string count (fill (item))) (.list->string (.make-list count fill)))
-
-  (def (.string->number p) ((liftP string->number) p))
-
-
-
-  (def (.not p)
-    (.let* (?? #t)
-     (.or (.let* (_ p) (set! ?? #f) (fail))
-          (.let* (_ (return #!void)) (if ?? (return #t) (fail))))))
-
-  (def (.read-line eof-fail?: (eof-fail? #f)
-                   include-newline?: (nl? #t)
-                   return: (ret list->string))
-    (let line ((cs []))
-      (.let* (c (.or (item) (return #!eof)))
-        (cond ((eof-object? c) (if eof-fail? (fail) (ret (reverse! cs))))
-              ((char=? #\newline c) (ret (reverse! (if nl? (cons c cs) cs))))
-              (#t (line (cons c cs)))))))
-
-  (def (.string=? str (return-parsed? #f) (char? char=?))
-    (def (str= lst)
-      (if (null? lst)
-        (return [])
-        (.let* ((c (sat (cut char? <> (car lst))))
-                (cs (str= (cdr lst))))
-          (if return-parsed? [c . cs] []))))
-    (let (lst (string->list str))
-      (.let* (v (str= lst)) (if return-parsed? (list->string v) (return str))) ))
-
-  (def (.string-ci=? str (p? #f))
-    (.string=? str p? char-ci=?))
-#+end_src
 
 * Treat it like a buffer 
 
@@ -2764,9 +2399,21 @@ Our buffer starts at 0.
 
 * /Files/ 
 
-** ~load-primitive.ss~
-#+begin_src gerbil :tangle "load-primitive.ss" :noweb yes :comment noweb
+
+  
+** /File/ ~primitive.ss~
+
+#+begin_src gerbil :tangle "primitive.ss" :noweb yes
+   ;;; -*- Gerbil -*-
+   ;;; (C) me at drewc.ca
+   
+   <<primitive>>
+#+end_src
+#+begin_src gerbil :noweb-ref primitive :noweb yes :comments noweb
   (import :std/sugar :std/generic :std/ref :std/srfi/1 :std/lazy)
+  (export #t)
+
+
   <<return>>
 
   <<fail>>
@@ -2775,53 +2422,558 @@ Our buffer starts at 0.
 
   <<item>>
 
+  <<sat>>
+
   <<p-ensure-parser>>
 
   <<bind>>
 
   <<.let*>>
-  
+
+  <<run>>
+
   <<++>>
 
   <<lazy+>>
 
   <<.first>>
 
-  
-
   <<point>>
 
   <<goto-char>>
+#+end_src
+*** Old Archived Primitive 
+  #+begin_src gerbil 
+    (import :std/sugar :std/srfi/1 :std/lazy :std/generic :std/ref)
+    (export #t)
+
+    <<return>>
+
+    <<fail>>
+
+    <<String-struct>>
+
+    <<item>>
+
+    <<p-ensure-parser>>
+
+    <<bind>>
+  
+    <<.let*>>
+
+    <<sat>>
+
+    <<++>>
+
+    <<c-for-rep>>
+
+    <<sepby>>
+
+    <<predicates>>
+
+    (def (ensure-parser p)
+      (cond
+       ((procedure? p) p)
+       ((char? p)
+        (bind (item) (lambda (x) (if (char=? x p) (return p) (fail)))))
+       ((string? p)
+        (let str ((xs (string->list p)))
+          (if (null? xs)
+            (return p)
+            (bind (item) (lambda (x) (if (char=? x (car xs)) (str (cdr xs)) (fail)))))))
+       ((or (boolean? p) (null? p)) (return p))))
+
+
+    ;; p ‘bind‘ f = \inp -> concat [f v inp’ | (v,inp’) <- p inp]
+    ;; (def (bind p f) (lambda (inp) (append-map (cut match <> ([v . inp*] ((f v) inp*)))
+    ;; ((ensure-parser p) inp))))
+
+
+    (def (bind p f)
+      (def (runPF PF pair) (match pair ([v . inp] ((PF v) inp))
+                                  (else (error pair " is not a return value pair"))))
+      (lambda (inp)
+        (let lp ((r ((ensure-parser p) inp)))
+          (match r 
+            ([] [])                     
+            ([pair . rest]
+             (if (lazy? pair)
+               (lp (append (force pair) rest))
+               (let ((PFr (runPF f pair)))
+                 (if (null? PFr) (lp rest)
+                     (append PFr
+                             (if (null? rest) rest
+                                 (list (delay (let (vs (lp rest))
+                                                (if (void? vs) [] vs))))))))))))))
+    ;;  item = \inp -> case inp of
+    ;;              [] -> []
+    ;;              (x:xs) -> [(x,xs)]
+
+    (defstruct narrow (input start end))
+
+
+    ;; (def (item)
+    ;;   (def (str-ref thing n)
+    ;;     (string-ref (let lp ((t thing))
+    ;;                   (cond ((string? t) t)
+    ;;                         ((pair? t) (lp (cdr t)))
+    ;;                         ((narrow? t) (lp (narrow-input t)))))
+    ;;                 n))
+    ;;   (def (str-item thing n)
+    ;;     (let ((x (str-ref thing n))
+    ;;           (xs (cons (+ 1 n) thing)))
+    ;;       [[x . xs]]))
+    ;;   (lambda (input)
+    ;;     (let (inp (if (pair? input)
+    ;;                 input
+    ;;                 (cons 0 input)))
+    ;;       (try
+    ;;        (match inp
+    ;;          ([n . thing]
+    ;;           (if (and (narrow? thing)
+    ;;                    (or (< n (narrow-start thing))
+    ;;                        (>= n (narrow-end thing))))
+    ;;             []
+    ;;             (str-item thing n))))
+    ;;        (catch _ [])))))
+
+    ;; (def (item)
+    ;;   (lambda (input)
+    ;;     (let (inp (if (pair? input)
+    ;;                 input
+    ;;                 (cons 0 input)))
+    ;;       ;(match ([n . thing] inp 
+    ;;       (try
+    ;;        (let ((x (string-ref (cdr inp) (car inp)))
+    ;;              (xs (cons (+ 1 (car inp)) (cdr inp))))
+    ;;          [[x . xs]])
+    ;;        (catch _ [])))))
+
+    ;; emacs buffer like
+    (def (point) (lambda (inp) [[(if (pair? inp) (car inp) 0) . inp]])) 
+
+    (def (goto-char n) (lambda (inp) [(cons n (cons n (if (pair? inp) (cdr inp) inp)))]))
+
+    (def (narrow-to-region start end)
+      (lambda (inp) [(cons start (cons start (make-narrow inp start end)))]))
+
+    (def (widen)
+      (lambda (inp)
+        (if (and (pair? inp) (narrow? (cdr inp)))
+          (let (nimp (narrow-input (cdr inp)))
+            [(cons (narrow-end (cdr inp)) nimp) ])
+           [(cons #f inp)])))
+
+
+    (def (run p inp (or-return #f))
+      (let lp ((v ((ensure-parser p) inp)))
+        (cond ((null? v) or-return)
+              ((lazy? (car v))
+               (let (new (force (car v)))
+                 (if (null? new) (lp (cdr v))
+                     (lp new))))
+              (#t (caar v)))))
+
+    ;; p ++ q = \inp -> (p inp ++ q inp)
+
+    (def (++ p q) (lambda (inp) (append ((ensure-parser p) inp) ((ensure-parser q) inp))))
+
+    ;; first p = \inp -> case p inp of
+    ;;                    [] -> []
+    ;;                    (x:xs) -> [x]
+
+    (def (.first p)
+      (lambda (inp) (let (v (p inp)) (match v ([] []) ([x . xs] [x])))))
+
+
+    ;; p +++ q = first (p ++ q)
+    ;; We are not lazy, so have to specify.
+    (def (+++ p q) (lambda (inp) (match ((ensure-parser p) inp)
+                              ([] ((ensure-parser q) inp)) (xs xs))))
+
+    (def (lazy+ p q)
+      (lambda (inp) (match ((ensure-parser p) inp)
+                 ([] ((ensure-parser q) inp))
+                 (xs (append xs (list (delay ((ensure-parser q) inp))))))))
+
+    (defsyntax (:parser stx)
+      (syntax-case stx ()
+        ((macro v)
+         (let* ((v (syntax->datum #'v))
+                (form
+                 (cond
+                  ((char? v)
+                   `(bind (item) (lambda (x) (if (char=? x ,v) (return ,v) (fail)))))
+                  ((string? v)
+                   (let (lst (string->list v))
+                     `(let str ((xs ',lst))
+                       (if (null? xs)
+                         (return ,v)
+                         (bind (item) (lambda (x)
+                                        (if (char=? x (car xs)) (str (cdr xs))
+                                            (fail))))))))
+                  (#t `(ensure-parser ,v)))))
+           (with-syntax ((P (datum->syntax #'macro form)))
+             #'P)) )))
+
+    (defsyntax (.let* stx)
+      (def (bind-form id value body)
+        `(bind ,value (lambda (,id) ,@body)))
+
+      (syntax-case stx ()
+        ((macro bind: (values . vs) to: v body ...)
+         (let* ((id (gensym)) (MV [':parser (syntax->datum #'v)])
+                (MF `(lambda (,id) (let ((values . ,(syntax->datum #'vs)) ,id)
+                                ,@(syntax->datum #'(body ...))))))
+           (with-syntax ((bf (datum->syntax #'macro ['bind MV MF])))
+             #'bf)))
+        ((macro bind: id to: value body ...)
+         (with-syntax ((bind-form (datum->syntax
+                                      #'macro
+                                    `(bind (:parser ,(syntax->datum #'value))
+                                            (lambda (,(syntax->datum #'id))
+                                              ,@(syntax->datum #'(body ...)))))))
+           #'bind-form))
+        ((macro ((id value) rest ...) body ...)
+         #'(macro bind: id to: value
+                  (macro (rest ...) body ...)))
+        ((macro (id value) body ...) #'(macro ((id value)) body ...))
+        ((macro _ body ...)
+         #'(let (ret (begin body ...))
+             (if (procedure? ret) ret (return ret))))))
+  #+end_src
+
+
+**** ~++~ and ~+++~ Adding simultaneous parser branches. 
+     :PROPERTIES:
+     :CUSTOM_ID: +++
+     :END:
+
+ There are two primitives for adding parsers together to run in unison, ~++~ and
+ ~+++~. Essentially, ~++~ is non-deterministic and ~+++~ is determined.
+
+ The easy way to explain is, of course, an example.
+
+ #+begin_src gerbil
+   ((++ (item) (return [])) "asd") ;; => ((#\a 1 . "asd") (() . "asd"))
+   ((+++ (item) (return [])) "asd") ;; => ((#\a 1 . "asd"))
+   ((+++ (fail) (return [])) "asd") ;; => ((() . "asd"))
+ #+end_src
+
+  ~++~ always runs the second parser, whereas ~+++~ only runs if the first one
+ fails.
+
+ ~many~ takes a plus combinator as its second argument, which allows us to only
+ have the largest block returned.
+
+*** ~load-primitive.ss~
+
+ #+begin_src gerbil :tangle "load-primitive.ss" :noweb yes :comment noweb
+   (import :std/sugar :std/generic :std/ref :std/srfi/1 :std/lazy)
+   <<return>>
+
+   <<fail>>
+
+
+   <<String-struct>>
+
+   <<item>>
+
+   <<p-ensure-parser>>
+
+   <<bind>>
+
+   <<.let*>>
+  
+   <<run>>
+
+   <<++>>
+
+   <<lazy+>>
+
+   <<.first>>
+
+  
+
+   <<point>>
+
+   <<goto-char>>
 
 
 
+ #+end_src
+  
+** /File/ ~simple.ss~
+  
+#+begin_src gerbil :tangle "simple.ss" :noweb yes
+   ;;; -*- Gerbil -*-
+   ;;; (C) me at drewc.ca
+   (import :drewc/smug/primitive :std/srfi/1) 
+   (export #t)
+ 
+   <<simple>>
 #+end_src
 
-** ~load-simple.ss~
-   #+begin_src gerbil :tangle load-simple.ss :noweb yes
-     <<sat>>
+*** Simple Contents (aka ~<<simple>>~)
 
-     <<liftP>>
+    #+begin_src gerbil :comments noweb :noweb yes :noweb-ref simple
 
-     <<some-and-many>>
-     <<some1>>
-     <<many1>>
+      <<liftP>>
+      <<skip>>
 
-     <<.any>>
+      ;; IMPORTED FROM PRIMITIVE <<sat>>
 
-     <<.or-and-+++>>
+      <<some-and-many>>
+      <<some1>>
+      <<many1>>
 
-     <<sepby>>
+      <<.any>>
 
-     <<predicates>>
+      <<.or-and-+++>>
+
+      <<sepby>>
+
+      <<predicates>>
+
+      <<meaningful-seps>>
+
+      <<begins>>
+
+      <<.make-things>>
+
+      <<ci=?>>
+
+      <<peek>>
+
+      <<.not>>
+
+
+      ;;; TODO: Replace soon -- me@drewc.ca
+      (def (.read-line eof-fail?: (eof-fail? #f)
+                       include-newline?: (nl? #t)
+                       return: (ret list->string))
+        (let line ((cs []))
+          (.let* (c (.or (item) (return #!eof)))
+            (cond ((eof-object? c) (if eof-fail? (fail) (ret (reverse! cs))))
+                  ((char=? #\newline c) (ret (reverse! (if nl? (cons c cs) cs))))
+                  (#t (line (cons c cs)))))))
+    #+end_src
+
+*** Old Archived Simple 
+ #+begin_src gerbil 
+   (import :drewc/smug/primitive
+           (for-syntax :drewc/smug/primitive)
+           (only-in :std/srfi/13 string-null?)
+           :std/srfi/1)
+   (export #t)
+
+
+   ;; sat p = item ‘bind‘ \x -> if p x then return x else fail
+   (def (sat predicate (p (item))) (bind p (lambda (x) (if (predicate x) (return x) (fail)))))
+   (def (satisfies predicate item: (item item))
+     (bind (item) (lambda (x) (if (predicate x) (return x) (fail)))))
+
+   (def (skip p) (+++ (bind p (lambda _ (+++ (skip p) (return #t)))) (return #f)))
+
+   (def (liftP function . args) 
+     (cut bind <> (lambda (v) (return (apply function v args)))))
+
+   (def (.char=? c) (sat (cut char=? <> c)))
+   (def (.char-ci=? c) (sat (cut char-ci=? <> c)))
+
+   (def (ci=? thing (ret #f))
+    (if (string? thing) (.string-ci=? thing ret) (.char-ci=? thing)))
+
+   (def (peek (p (item)))
+     (let (v (gensym))
+       (.let* (peek (return v))
+         (.or (.let* (x p) (set! peek x) (fail))
+              (.let* (_ #f) (if (eq? peek v) (fail) (return peek)))))))
+
+   (def (.begin p . ps)
+     (bind p (lambda (v) (if (null? ps) (return v) (apply .begin ps)))))
+
+   (def (.begin0 p . ps)
+     (.let* ((x p) (_ (if (null? ps) (return ps) (apply .begin ps))))
+       (return x)))
+
+
+
+   (def (.or p . ps) (+++ p (if (null? ps) (fail) (apply .or ps))))
+   (def (.any p . ps) (++ p (if (null? ps) (fail) (apply .any ps))))
+
+
+   (def (save-excursion . ps) (if (null? ps) (fail) (peek (apply .begin ps))))
+
+   (def (skip-chars-forward charbag (end #f))
+     (def lst (if (list? charbag) charbag (string->list charbag)))
+     (let sk ((ret 0))
+       (.or (.let* (p (point))
+              (if (and end (>= p end)) (return ret)
+                 (.begin (sat (cut memv <> lst)) (sk (1+ ret)))))
+            (return ret))))
+
+   (def (skip-chars-backward charbag (start #f))
+     (def lst (if (list? charbag) charbag (string->list charbag)))
+     (def (skb (p #f) (ret 0))
+       (if (or (and p (zero? p)) (and start (<= start p))) (return ret)
+           (.let* (bp (goto-char (1- p)))
+             (.or (.begin (sat (cut member <> lst))
+                          (skb bp (1+ ret)))
+                  (.begin (item) (return ret))))))
+     (bind (point) skb))
+
+   (def (forward-line (count 1))
+     (.begin (many (sat (? (not (cut char=? #\newline <>)))))
+             #\newline
+             (if (> count 1) (forward-line (1- count)) (point))))
+
+   (def (beginning-of-line (count 1))
+     (def (bol p)
+       (if (and p (zero? p)) (return p)
+           (let ((bp (1- p)))
+             (.let* (c (.begin (goto-char bp) (item)))
+               (if (char=? #\newline c)
+                       (return p)
+                       (bol bp))))))
+     (.let* (_ (if (> count 1)
+                 (forward-line (1- count)) #f))
+       (bind (point) bol)))
+
+   (def (end-of-line (count 1))
+     (def eol (.begin (skip (sat (? (not (cut char=? <> #\newline)))))
+                      (point)))
+     (.let* (e eol)
+       (if (> count 1)
+         (.begin (item) (end-of-line (1- count)))
+         (return e))))
+
+   (def (buffer-substring start end)
+     (peek (.begin (goto-char start) (.make-string (- end start)))))
+
+   (def (count-lines start end)
+     (save-excursion (goto-char start)
+                     (.let* (lst (.make-list (- end start) (item)))
+                         (return (count (cut char=? #\newline <>) lst)))))
+
+
+
+
+   ;; Some.
+
+   (def (some p)
+     (lazy+ (return []) (.let* ((x p) (xs (some p))) (cons x xs))))
+
+   (def (some1 p) (.let* ((x p) (xs (some p))) (cons x xs)))
+
+
+
+   ;; bracket open p close = [x | _ <- open, x <- p, _ <- close]
+
+   (def (bracket open p close) (.let* ((_ open) (x p) (_ close)) (return x)))
+
+
+   ;; many p = [x:xs | x <- p, xs <- many p] ++ [[]]
+
+   (def (many parser (plus +++))
+     (plus (.let* ((x parser) (xs (many parser plus))) (return [x . xs]))
+           (return [])))
+
+   (def (many1 p (plus +++))
+     (.let* ((x p) (xs (many p plus))) [x . xs]))
+
+   (def (at-least n parser (plus +++))
+     (plus (.let* ((x parser)
+                       (xs (at-least (- n 1) parser plus)))
+            (return [x . xs]))
+           (if (> n 0) (fail) (return []))))
+
+
+
+   ;; sepby1:: Parser a -> Parser b -> Parser [a]
+   ;; p ‘sepby1‘ sep = [x:xs | x <- p , xs <- many [y | _ <- sep , y <- p]]   
+
+   (def (sepby1 p sep (plus +++))
+     (.let* ((x p) (xs (many (.let* ((_ sep) (y p)) (return y)) plus))) 
+      (return [x . xs])))
+
+
+   (def (.cons p q) (.let* ((x p) (y q)) (cons x y)))
+
+   (def (.list p . ps)
+     (.let* ((x p) (xs (if (null? ps) (return ps) (apply .list ps))))
+       (cons x xs)))
+
+   (def (.make-list count (fill (item)))
+     (if (zero? count) (return [])
+         (.let* ((x fill) (xs (.make-list (1- count) fill))) [x . xs])))
+
+   (def (.list->string p) ((liftP list->string) p))
+
+   (def (.string p . ps) (.list->string (apply .list p ps)))
+
+   (def (.make-string count (fill (item))) (.list->string (.make-list count fill)))
+
+   (def (.string->number p) ((liftP string->number) p))
+
+
+
+   (def (.not p)
+     (.let* (?? #t)
+      (.or (.let* (_ p) (set! ?? #f) (fail))
+           (.let* (_ (return #!void)) (if ?? (return #t) (fail))))))
+
+   (def (.read-line eof-fail?: (eof-fail? #f)
+                    include-newline?: (nl? #t)
+                    return: (ret list->string))
+     (let line ((cs []))
+       (.let* (c (.or (item) (return #!eof)))
+         (cond ((eof-object? c) (if eof-fail? (fail) (ret (reverse! cs))))
+               ((char=? #\newline c) (ret (reverse! (if nl? (cons c cs) cs))))
+               (#t (line (cons c cs)))))))
+
+   (def (.string=? str (return-parsed? #f) (char? char=?))
+     (def (str= lst)
+       (if (null? lst)
+         (return [])
+         (.let* ((c (sat (cut char? <> (car lst))))
+                 (cs (str= (cdr lst))))
+           (if return-parsed? [c . cs] []))))
+     (let (lst (string->list str))
+       (.let* (v (str= lst)) (if return-parsed? (list->string v) (return str))) ))
+
+   (def (.string-ci=? str (p? #f))
+     (.string=? str p? char-ci=?))
+ #+end_src
+
+*** ~load-simple.ss~
+    #+begin_src gerbil :tangle load-simple.ss :noweb yes
+      <<sat>>
+
+      <<liftP>>
+
+      <<some-and-many>>
+      <<some1>>
+      <<many1>>
+
+      <<.any>>
+
+      <<.or-and-+++>>
+
+      <<sepby>>
+
+      <<predicates>>
      
-     <<meaningful-seps>>
+      <<meaningful-seps>>
 
-     <<begins>>
+      <<begins>>
 
-     <<.make-things>>
+      <<.make-things>>
 
-   #+end_src
+      <<peek>>
+
+      <<.not>>
+    #+end_src
 ** ~test-parser.ss~
 #+begin_src gerbil :noweb yes :tangle test-parser.ss
    (import :std/test
@@ -2849,8 +3001,11 @@ Our buffer starts at 0.
 
   ;; <<test-c-for-rep>>
 #+end_src
+** ~lexical-parsing.ss~
 
-
+#+begin_src gerbil :tangle lexical-parsing.ss :noweb yes
+<<lexical-parsing>>
+#+end_src
 * footnotes	 
 
 [fn:gerborg] https://github.com/drewc/gerborg 

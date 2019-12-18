@@ -1,179 +1,188 @@
-(import :std/sugar :std/srfi/1 :std/lazy)
+;;; -*- Gerbil -*-
+;;; (C) me at drewc.ca
+
+(import :std/sugar :std/generic :std/ref :std/srfi/1 :std/lazy)
 (export #t)
 
+
+;; [[file:~/src/smug-gerbil/parser.org::*~(return%20thing)~][]]
 ;; return v = \inp -> [(v,inp)]
 (def (return v) (lambda (inp) [[v . inp]]))
+;; ends here
 
+;; [[file:~/src/smug-gerbil/parser.org::*~(fail)~%20and%20~FAIL~][]]
 ;; fail = \inp -> []
-(def (fail) (lambda _ []))
+(def FAIL (lambda _ []))
+(def (fail) FAIL)
+;; ends here
 
-(def (ensure-parser p)
-  (cond
-   ((procedure? p) p)
-   ((char? p)
-    (bind (item) (lambda (x) (if (char=? x p) (return p) (fail)))))
-   ((string? p)
-    (let str ((xs (string->list p)))
-      (if (null? xs)
-        (return p)
-        (bind (item) (lambda (x) (if (char=? x (car xs)) (str (cdr xs)) (fail)))))))
-   ((or (boolean? p) (null? p)) (return p))))
+;; [[file:~/src/smug-gerbil/parser.org::#ITEM_and_item][]]
+(defstruct String (point thing) transparent: #t)
+;; ends here
 
+;; [[file:~/src/smug-gerbil/parser.org::#ITEM_and_item][]]
+(defgeneric input-item-ref (lambda (t n) (ref t n)))
+;; ends here
+;; [[file:~/src/smug-gerbil/parser.org::#ITEM_and_item][]]
+(defgeneric input-item (cut error "No input-item declared for : " <>))
+(defmethod (input-item (str <string>)) (input-item (String 0 str)))
+(defmethod (input-item (str <pair>)) (input-item (String 0 str)))
+(defmethod (input-item (str <vector>)) (input-item (String 0 str)))
+(defmethod (input-item (str String))
+  (match str
+    ((String point parsee)
+     (try  [(cons (input-item-ref parsee point)
+                  (String (1+ point) parsee))]
+           (catch (e) #;(display-exception e) [])))))
+;; ends here
+;; [[file:~/src/smug-gerbil/parser.org::#ITEM_and_item][]]
+(def ITEM input-item)
+(def (item) ITEM)
+;; ends here
 
-;; p ‘bind‘ f = \inp -> concat [f v inp’ | (v,inp’) <- p inp]
-;; (def (bind p f) (lambda (inp) (append-map (cut match <> ([v . inp*] ((f v) inp*)))
-;; ((ensure-parser p) inp))))
+;; [[file:~/src/smug-gerbil/parser.org::*~sat~,%20our%20first%20simple%20parser.][]]
+;; sat p = item ‘bind‘ \x -> if p x then return x else fail
+(def (sat predicate (parser (item)))
+  (bind parser (lambda (x) (if (predicate x) (return x) (fail)))))
+;; ends here
 
+;; [[file:~/src/smug-gerbil/parser.org::*~:P~%20syntax%20and%20~ensure-parser(thing%20inp)~.][]]
+(defgeneric ensure-parser
+  (lambda (thing inp)
+    ((return thing) inp)))
 
-(def (bind p f)
-  (def (runPF PF pair) (match pair ([v . inp] ((PF v) inp))
-                              (else (error pair " is not a return value pair"))))
-  (lambda (inp)
-    (let lp ((r ((ensure-parser p) inp)))
-      (match r 
-        ([] [])                     
-        ([pair . rest]
-         (if (lazy? pair)
-           (lp (append (force pair) rest))
-           (let ((PFr (runPF f pair)))
-             (if (null? PFr) (lp rest)
-                 (append PFr
-                         (if (null? rest) rest
-                             (list (delay (let (vs (lp rest))
-                                            (if (void? vs) [] vs))))))))))))))
-;;  item = \inp -> case inp of
-;;              [] -> []
-;;              (x:xs) -> [(x,xs)]
-
-(defstruct narrow (input start end))
-
-
-(def (item)
-  (def (str-ref thing n)
-    (string-ref (let lp ((t thing))
-                  (cond ((string? t) t)
-                        ((pair? t) (lp (cdr t)))
-                        ((narrow? t) (lp (narrow-input t)))))
-                n))
-  (def (str-item thing n)
-    (let ((x (str-ref thing n))
-          (xs (cons (+ 1 n) thing)))
-      [[x . xs]]))
-  (lambda (input)
-    (let (inp (if (pair? input)
-                input
-                (cons 0 input)))
-      (try
-       (match inp
-         ([n . thing]
-          (if (and (narrow? thing)
-                   (or (< n (narrow-start thing))
-                       (>= n (narrow-end thing))))
-            []
-            (str-item thing n))))
-       (catch _ [])))))
-
-;; (def (item)
-;;   (lambda (input)
-;;     (let (inp (if (pair? input)
-;;                 input
-;;                 (cons 0 input)))
-;;       ;(match ([n . thing] inp 
-;;       (try
-;;        (let ((x (string-ref (cdr inp) (car inp)))
-;;              (xs (cons (+ 1 (car inp)) (cdr inp))))
-;;          [[x . xs]])
-;;        (catch _ [])))))
-
-;; emacs buffer like
-(def (point) (lambda (inp) [[(if (pair? inp) (car inp) 0) . inp]])) 
-
-(def (goto-char n) (lambda (inp) [(cons n (cons n (if (pair? inp) (cdr inp) inp)))]))
-
-(def (narrow-to-region start end)
-  (lambda (inp) [(cons start (cons start (make-narrow inp start end)))]))
-
-(def (widen)
-  (lambda (inp)
-    (if (and (pair? inp) (narrow? (cdr inp)))
-      (let (nimp (narrow-input (cdr inp)))
-        [(cons (narrow-end (cdr inp)) nimp) ])
-      [(cons #f inp)])))
-
-
-(def (run p inp (or-return #f))
-  (let lp ((v ((ensure-parser p) inp)))
-    (cond ((null? v) or-return)
-          ((lazy? (car v))
-           (let (new (force (car v)))
-             (if (null? new) (lp (cdr v))
-                 (lp new))))
-          (#t (caar v)))))
-
-;; p ++ q = \inp -> (p inp ++ q inp)
-
-(def (++ p q) (lambda (inp) (append ((ensure-parser p) inp) ((ensure-parser q) inp))))
-
-;; first p = \inp -> case p inp of
-;;                    [] -> []
-;;                    (x:xs) -> [x]
-
-(def (.first p)
-  (lambda (inp) (let (v (p inp)) (match v ([] []) ([x . xs] [x])))))
-
-
-;; p +++ q = first (p ++ q)
-;; We are not lazy, so have to specify.
-(def (+++ p q) (lambda (inp) (match ((ensure-parser p) inp)
-                          ([] ((ensure-parser q) inp)) (xs xs))))
-
-(def (lazy+ p q)
-  (lambda (inp) (match ((ensure-parser p) inp)
-             ([] ((ensure-parser q) inp))
-             (xs (append xs (list (delay ((ensure-parser q) inp))))))))
-
-(defsyntax (:parser stx)
+(defsyntax (:P stx)
   (syntax-case stx ()
     ((macro v)
-     (let* ((v (syntax->datum #'v))
-            (form
-             (cond
-              ((char? v)
-               `(bind (item) (lambda (x) (if (char=? x ,v) (return ,v) (fail)))))
-              ((string? v)
-               (let (lst (string->list v))
-                 `(let str ((xs ',lst))
-                   (if (null? xs)
-                     (return ,v)
-                     (bind (item) (lambda (x)
-                                    (if (char=? x (car xs)) (str (cdr xs))
-                                        (fail))))))))
-              (#t `(ensure-parser ,v)))))
-       (with-syntax ((P (datum->syntax #'macro form)))
-         #'P)))))
+     (let* (v (syntax->datum #'v))
+       (datum->syntax #'macro 
+         `(:P ,(cond
+                ((char? v) char:)
+                ((string? v) string:)
+                (((? (or boolean? void? null?)) v) return:)
+                ((eof-object? v) eof:)
+                (#t ensure:))
+              ,v))))
 
+    ((macro char: c)
+     #'(sat (cut char=? <> c)))
+    ((macro return: v) #'(return v))
+    ((macro eof: v) #'(lambda (i) (match (ITEM i)
+                               ([] [[v . i]])
+                               (t []))))
+    ((macro ensure: thing)
+     #'(let (v thing)
+         (cond
+          ((procedure? v) v)
+          ((char? v) (:P char: v))
+          ((string? v) (:P string: v))
+          (((? (or boolean? void? null?)) v) (:P return: v))
+          ((eof-object? v) (:P eof: v))
+          (#t (cut ensure-parser v <>)))))
+    ((macro string: str)
+     (let* ((v (syntax->datum #'str))
+            (lst? (and (string? v) `(quote ,(string->list v))))
+            (str (gensym)) (lst (gensym)) (cs (gensym)))
+       (datum->syntax #'macro 
+         `(let* ((,str ,v) (,lst ,(or lst? `(string->list ,str))))
+            (let str? ((,cs ,lst))
+              (if (null? ,cs) (return ,str)
+                  (bind (:P char: (car ,cs))
+                        (lambda _ (str? (cdr ,cs))))))))))))
+;; ends here
+
+;; [[file:~/src/smug-gerbil/parser.org::*Lazy%20~bind~][]]
+;; (import :std/lazy)
+(def (bind p f)
+  (def (sugarPF f) (lambda (v) (let (r (f v)) (if (procedure? r) r (return r)))))
+  (def (callPF PF pair)
+    (match pair
+      ([v . inp] (((sugarPF PF) v) inp))
+      (else
+       (error pair " is not a pair as expected for a [v . inp] return value"))))
+   (lambda (inp)
+     (let lp ((r ((:P p) inp)))
+       (match r 
+         ([] [])                     
+         ([pair . rest]
+          (if (lazy? pair)
+            (lp (append (force pair) rest))
+            (let ((PFr (callPF f pair)))
+              (if (null? PFr) (lp rest)
+                  (append PFr
+                          (if (null? rest) rest
+                              (list (delay (let (vs (lp rest))
+                                             (if (void? vs) [] vs))))))))))))))
+;; ends here
+
+;; [[file:~/src/smug-gerbil/parser.org::*~values~%20and%20~.let*~][]]
 (defsyntax (.let* stx)
-  (def (bind-form id value body)
-    `(bind ,value (lambda (,id) ,@body)))
-
   (syntax-case stx ()
-    ((macro bind: (values . vs) to: v body ...)
-     (let* ((id (gensym)) (MV [':parser (syntax->datum #'v)])
-            (MF `(lambda (,id) (let ((values . ,(syntax->datum #'vs)) ,id)
-                            ,@(syntax->datum #'(body ...))))))
-       (with-syntax ((bf (datum->syntax #'macro ['bind MV MF])))
-         #'bf)))
-    ((macro bind: id to: value body ...)
-     (with-syntax ((bind-form (datum->syntax
-                                  #'macro
-                                `(bind (:parser ,(syntax->datum #'value))
-                                        (lambda (,(syntax->datum #'id))
-                                          ,@(syntax->datum #'(body ...)))))))
-       #'bind-form))
+   ;;; First the hidden bind: to: with values
+    ((macro bind: (values . vs) to: PV body ...)
+     (let (id (gensym))
+       (datum->syntax #'macro
+         `(.let* (,id ,(syntax->datum #'PV))
+            (let ((values . ,(syntax->datum #'vs)) ,id)
+              ,@(syntax->datum #'(body ...)))))))
+    ;;; Now the still hidden bind: to:
+    ((macro bind: id to: PV body ...)
+     (datum->syntax
+         #'macro
+       `(bind (:P ,(syntax->datum #'PV))
+              (lambda (,(syntax->datum #'id)) ,@(syntax->datum #'(body ...))))))
+  ;;; And with the ((v ...) (w ...)) type that recursively expands.
     ((macro ((id value) rest ...) body ...)
      #'(macro bind: id to: value
               (macro (rest ...) body ...)))
     ((macro (id value) body ...) #'(macro ((id value)) body ...))
     ((macro _ body ...)
-     #'(let (ret (begin body ...))
-         (if (procedure? ret) ret (return ret))))))
+     #'(begin body ...))))
+;; ends here
+
+;; [[file:~/src/smug-gerbil/parser.org::*~run~'ing%20parsers][]]
+(def (run p inp (fail-object #f))
+    (let lp ((v ((:P p) inp)))
+      (cond ((null? v) fail-object)
+            ((lazy? (car v))
+             (let (new (force (car v)))
+               (if (null? new) (lp (cdr v))
+                   (lp new))))
+            (#t (caar v)))))
+;; ends here
+
+;; [[file:~/src/smug-gerbil/parser.org::*~++~,%20Part%202][]]
+;; p ++ q = \inp -> (p inp ++ q inp)
+(def (++ p q) (lambda (inp) (append ((:P p) inp) ((:P q) inp))))
+;; ends here
+
+;; [[file:~/src/smug-gerbil/parser.org::*~lazy+~,%20~many~%20and%20~some~%20put%20to%20rest%20as%20we're%20not%20lazy%20enough.][]]
+(def (lazy+ p q)
+  (lambda (inp) (match ((:P p) inp) ([] ((:P q) inp))
+                  (xs (append xs (list (delay ((:P q) inp))))))))
+;; ends here
+;; [[file:~/src/smug-gerbil/parser.org::*~plus~%20and%20~.any~.][]]
+(defalias plus lazy+)
+;; ends here
+
+;; [[file:~/src/smug-gerbil/parser.org::*~.first~][]]
+(def (.first p) (lambda (inp) (match ((:P p) inp) ([x . xs] [x]) ([] []))))
+;; ends here
+
+;; [[file:~/src/smug-gerbil/parser.org::*~(point)/POINT~%20and%20~goto-char~][]]
+(defgeneric input-point (lambda _ 0))
+(defmethod (input-point (s String)) (String-point s))
+
+(def POINT (lambda (inp) [[(input-point inp). inp]]))
+(def (point) POINT)
+;; ends here
+
+;; [[file:~/src/smug-gerbil/parser.org::*~(point)/POINT~%20and%20~goto-char~][]]
+(defgeneric input-goto-char
+  (lambda (input pos) (input-goto-char (String pos input))))
+
+(defmethod (input-goto-char (inp String) (pos <t>))
+  (match inp ((String p i) [`(pos . ,(String pos i))])))
+
+(def (goto-char n) (cut input-goto-char <> n))
+;; ends here

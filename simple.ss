@@ -1,141 +1,183 @@
-(import :drewc/smug/primitive
-        (for-syntax :drewc/smug/primitive)
-        (only-in :std/srfi/13 string-null?)
-        :std/srfi/1)
+;;; -*- Gerbil -*-
+;;; (C) me at drewc.ca
+(import :drewc/smug/primitive :std/srfi/1) 
 (export #t)
 
-;; sat p = item ‘bind‘ \x -> if p x then return x else fail
-(def (sat predicate (p (item)))
-    (bind p (lambda (x) (if (predicate x) (return x) (fail)))))
 
-(def (satisfies predicate item: (item item))
-  (bind (item) (lambda (x) (if (predicate x) (return x) (fail)))))
+;; [[file:~/src/smug-gerbil/parser.org::*~liftP~,%20lift%20a%20function%20to%20a%20parser][]]
+(def (liftP fn) (cut bind <> (lambda (r) (return (fn r)))))
+;; ends here
+;; [[file:~/src/smug-gerbil/parser.org::*~skip~,%20skip%20to%20me%20lex%20my%20darling.][]]
+(def (skip p) (.or (.let* (_ p) (.or (skip p) #t)) #f))
+;; ends here
 
-(def (skip p) (+++ (bind p (lambda _ (+++ (skip p) (return #t)))) (return #f)))
+;; IMPORTED FROM PRIMITIVE ;; [[file:~/src/smug-gerbil/parser.org::*~sat~,%20our%20first%20simple%20parser.][]]
+;; IMPORTED FROM PRIMITIVE ;; sat p = item ‘bind‘ \x -> if p x then return x else fail
+;; IMPORTED FROM PRIMITIVE (def (sat predicate (parser (item)))
+;; IMPORTED FROM PRIMITIVE   (bind parser (lambda (x) (if (predicate x) (return x) (fail)))))
+;; IMPORTED FROM PRIMITIVE ;; ends here
 
-(def (liftP function . args) 
-  (cut bind <> (lambda (v) (return (apply function v args)))))
+;; [[file:~/src/smug-gerbil/parser.org::*~lazy+~,%20~many~%20and%20~some~%20put%20to%20rest%20as%20we're%20not%20lazy%20enough.][]]
+(def (many p) (lazy+ (.let* ((x p) (xs (many p))) [x . xs]) []))
+(def (some p) (lazy+ [] (.let* ((x p) (xs (some p))) [x . xs])))
+;; ends here
+;; [[file:~/src/smug-gerbil/parser.org::*~some~%20and%20~some1~,%20Part%201][]]
+(def (some1 p) (.let* ((x p) (xs (some p))) (return [x . xs])))
+;; ends here
+;; [[file:~/src/smug-gerbil/parser.org::*~many1~,%20because%20empty%20is%20boring][]]
+(def (many1 p) (.let* ((x p) (xs (many p))) [x . xs])) 
+;; ends here
 
-(def (.char=? c) (sat (cut char=? <> c)))
-(def (.char-ci=? c) (sat (cut char-ci=? <> c)))
+;; [[file:~/src/smug-gerbil/parser.org::*~plus~%20and%20~.any~.][]]
+(def (.any . ps) (foldr plus FAIL ps))
+;; ends here
 
-(def (ci=? thing (ret #f))
- (if (string? thing) (.string-ci=? thing ret) (.char-ci=? thing)))
+;; [[file:~/src/smug-gerbil/parser.org::*~.or~%20and%20~+++~][]]
+(def (.or . ps) (.first (apply .any ps)))
+(def (+++ p q) (.first (plus p q)))
+;; ends here
 
-(def (peek (p (item)))
-  (let (v (gensym))
-    (.let* (peek (return v))
-      (.or (.let* (x p) (set! peek x) (fail))
-           (.let* (_ #f) (if (eq? peek v) (fail) (return peek)))))))
+;; [[file:~/src/smug-gerbil/parser.org::*~sepby1~][]]
+(def (sepby1 p sep)
+  (.let* ((x p) (xs (many (.let* ((_ sep) (y p)) y)))) [x . xs]))
 
-(def (.begin p . ps)
-  (bind p (lambda (v) (if (null? ps) (return v) (apply .begin ps)))))
+;; ((sepby1 Int ",") "-42,42,420")
+;; => (((-42 42 420) . #<String point: 10 thing: "-42,42,420">)
+;;     ((-42 42 42) . #<String point: 9 thing: "-42,42,420">)
+;;     ((-42 42 4) . #<String point: 8 thing: "-42,42,420">)
+;;     ((-42 42) . #<String point: 6 thing: "-42,42,420">)
+;;     ((-42 4) . #<String point: 5 thing: "-42,42,420">)
+;;     ((-42) . #<String point: 3 thing: "-42,42,420">)
+;;     ((-4) . #<String  point: 2 thing: "-42,42,420">))
+;; ends here
+;; [[file:~/src/smug-gerbil/parser.org::*~bracket~][]]
+(def (bracket open p close) (.let* ((_ open) (x p) (_ close)) x))
+;; ends here
+;; [[file:~/src/smug-gerbil/parser.org::*~sepby~,%20like%20~many~,%20always%20succeeds.][]]
+(def (sepby p sep) (++ (sepby1 p sep) []))
+;; ends here
 
-(def (.begin0 p . ps)
-  (.let* ((x p) (_ (if (null? ps) (return ps) (apply .begin ps))))
-    (return x)))
+;; [[file:~/src/smug-gerbil/parser.org::*~characters~'s][]]
+(defsyntax (def.charsat stx)
+  (syntax-case stx ()
+    ((m pred)
+     (let (pred? (syntax->datum #'pred))
+     (datum->syntax #'m
+       `(def (,(string->symbol
+                (string-append "." (symbol->string pred?))) c)
+          (sat (cut ,pred? <> c))))))
+    ((m pred preds ...)
+     #'(begin (m pred)
+              (m preds ...)))))
 
+(def.charsat char=? char>? char<? char<=? char>=?
+  char-ci=? char-ci<=? char-ci>=? char-ci<? char-ci>?)
 
+(def (.char-alphabetic?) (sat char-alphabetic?))
+(def (.char-numeric?) (sat char-numeric?))
+(def (.char-upper-case?) (sat char-upper-case?))
+(def (.char-lower-case?) (sat char-lower-case?))
+;; ends here
+;; [[file:~/src/smug-gerbil/parser.org::*~.list=~][]]
+(def* .list=
+  ((lst) (.list= equal? lst #t))
+  ((pred-or-list list-or-bool)
+   (.list= (if (list? pred-or-list) equal? pred-or-list)
+           (if (list? pred-or-list) pred-or-list list-or-bool)
+           (if (list? pred-or-list) list-or-bool #t)))
+  ((elt= lst return-parsed?)
+   (let l= ((cs lst))
+     (if (null? cs) (return [])
+         (.let* ((c (sat (cut elt= <> (car cs))))
+                 (cs (l= (cdr cs))))
+           (if return-parsed? (cons c cs) lst))))))
+;; ends here
+;; [[file:~/src/smug-gerbil/parser.org::*~.string%5B-ci%5D=%5B?%5D~,%20~:P~%20is%20not%20the%20only%20way%20to%20test%20strings.][]]
+(def (.string=? str (start #f) (end #f))
+  (:P string:
+      (if (not (or start end)) str
+          (substring
+           str (or start 0) (or end (string-length str))))))
+;; ends here
+;; [[file:~/src/smug-gerbil/parser.org::*~.string%5B-ci%5D=%5B?%5D~,%20~:P~%20is%20not%20the%20only%20way%20to%20test%20strings.][]]
+(def (:Pstring= str pred: (pred char=?) start: (start #f) end: (end #f)
+                return-parsed: (r? #t))
+  (def lst (string->list
+            (if (or (not (or start end))
+                    (and (eqv? start 0) (not end)))
+             str
+             (substring str (or start 0) (or (and (number? end) end) (string-length str))))))
 
-(def (.or p . ps) (+++ p (if (null? ps) (fail) (apply .or ps))))
-(def (.any p . ps) (++ p (if (null? ps) (fail) (apply .any ps))))
+  (.let* (l (.list= pred lst r?))
+    (if r? (list->string l) str)))
+;; ends here
+;; [[file:~/src/smug-gerbil/parser.org::*~.string%5B-ci%5D=%5B?%5D~,%20~:P~%20is%20not%20the%20only%20way%20to%20test%20strings.][]]
+(def (.string= pred-or-str (str-or-n-or-b (void))
+               (n-or-b (void))
+               (en-or-b (void))
+               (r? (void)))
+ (let ((str (if (string? pred-or-str) pred-or-str str-or-n-or-b))
+       (pred (if (string? pred-or-str) char=? pred-or-str))
+       (start (if (number? str-or-n-or-b) str-or-n-or-b
+                  (if (number? n-or-b) n-or-b (if (number? en-or-b) en-or-b #f))))
+       (end (if (string? pred-or-str)
+              (if (number? str-or-n-or-b)
+                n-or-b
+                (if (number? en-or-b) en-or-b #f))
+              #f))
+       (r? (if (boolean? r?) r?
+               (if (boolean? en-or-b) en-or-b
+                   (if (boolean? n-or-b) n-or-b
+                       (if (boolean? str-or-n-or-b) str-or-n-or-b #t))))))
+     (:Pstring= str pred: pred start: start end: end return-parsed: r?)))
+;; ends here
+;; [[file:~/src/smug-gerbil/parser.org::*~.string-ci=?~%20and%20friends.][]]
+(def (.string-ci=? str . args) (apply .string= char-ci=? str args))
+;; ends here
 
+;; [[file:~/src/smug-gerbil/parser.org::*Repetition%20with%20meaningful%20separators][]]
+(def (ops . pairs)
+  (def op (cut match <> ([p . op] (.let* (_ p) (return op)))))
+  (foldr ++ FAIL (map op pairs)))
+;; ends here
+;; [[file:~/src/smug-gerbil/parser.org::*Repetition%20with%20meaningful%20separators][]]
+(def (chainl1 p op)
+  (def (chain-link x)
+    (++ (.let* ((f op) (y p)) (chain-link (f x y))) (return x)))
+  (bind p chain-link))
+;; ends here
+;; [[file:~/src/smug-gerbil/parser.org::*Repetition%20with%20meaningful%20separators][]]
+(def (chainr1 p op)
+  (.let* (x p)
+    (++ (.let* ((f op) (y (chainr1 p op))) (return (f x y)))
+        (return x))))
+;; ends here
 
-(def (save-excursion . ps) (if (null? ps) (fail) (peek (apply .begin ps))))
+;; [[file:~/src/smug-gerbil/parser.org::*~.begin~%20and%20~.begin0~][]]
+;; (defrules .begin ()
+;;     ((macro p)
+;;      (.let* (x p) (return x)))
+;;     ((macro p ps ...)
+;;      (.let* (_ p) (macro ps ...))))
 
-(def (skip-chars-forward charbag (end #f))
-  (def lst (if (list? charbag) charbag (string->list charbag)))
-  (let sk ((ret 0))
-    (.or (.let* (p (point))
-           (if (and end (>= p end)) (return ret)
-              (.begin (sat (cut memv <> lst)) (sk (1+ ret)))))
-         (return ret))))
+(defsyntax (.begin stx)
+  (def ret (gensym))
+  (syntax-case stx ()
+    ((macro P)
+     (datum->syntax #'macro `(.let* (,ret ,(syntax->datum #'P))
+                               (return ,ret))))
+    ((macro P Ps ...)
+     (datum->syntax #'macro `(.let* (_ ,(syntax->datum #'P))
+                                         (.begin ,@(syntax->datum #'(Ps ...))))))))
+(defrules .begin0 ()
+  ((macro p)
+   (.let* (x p) (return x)))
+  ((macro p ps ...)
+   (.let* ((x p) (_ (.begin (macro ps ...)))) (return x))))
 
-(def (skip-chars-backward charbag (start #f))
-  (def lst (if (list? charbag) charbag (string->list charbag)))
-  (def (skb (p #f) (ret 0))
-    (if (or (zero? p) (and start (<= start p))) (return ret)
-        (.let* (bp (goto-char (1- p)))
-          (.or (.begin (sat (cut member <> lst))
-                       (skb bp (1+ ret)))
-               (.begin (item) (return ret))))))
-  (bind (point) skb))
+;; ends here
 
-(def (forward-line (count 1))
-  (.begin (many (sat (? (not (cut char=? #\newline <>)))))
-          #\newline
-          (if (> count 1) (forward-line (1- count)) (point))))
-
-(def (beginning-of-line (count 1))
-  (def (bol p)
-    (if (zero? p) (return p)
-        (let ((bp (1- p)))
-          (.let* (c (.begin (goto-char bp) (item)))
-            (if (char=? #\newline c)
-                    (return p)
-                    (bol bp))))))
-  (.let* (_ (if (> count 1)
-              (forward-line (1- count)) #f))
-    (bind (point) bol)))
-
-(def (end-of-line (count 1))
-  (def eol (.begin (skip (sat (? (not (cut char=? <> #\newline)))))
-                   (point)))
-  (.let* (e eol)
-    (if (> count 1)
-      (.begin (item) (end-of-line (1- count)))
-      (return e))))
-
-(def (buffer-substring start end)
-  (peek (.begin (goto-char start) (.make-string (- end start)))))
-
-(def (count-lines start end)
-  (save-excursion (goto-char start)
-                  (.let* (lst (.make-list (- end start) (item)))
-                      (return (count (cut char=? #\newline <>) lst)))))
-
-
-
-
-;; Some.
-
-(def (some p)
-  (lazy+ (return []) (.let* ((x p) (xs (some p))) (cons x xs))))
-
-(def (some1 p) (.let* ((x p) (xs (some p))) (cons x xs)))
-
-
-
-;; bracket open p close = [x | _ <- open, x <- p, _ <- close]
-
-(def (bracket open p close) (.let* ((_ open) (x p) (_ close)) (return x)))
-
-
-;; many p = [x:xs | x <- p, xs <- many p] ++ [[]]
-
-(def (many parser (plus +++))
-  (plus (.let* ((x parser) (xs (many parser plus))) (return [x . xs]))
-        (return [])))
-
-(def (many1 p (plus +++))
-  (.let* ((x p) (xs (many p plus))) [x . xs]))
-
-(def (at-least n parser (plus +++))
-  (plus (.let* ((x parser)
-                    (xs (at-least (- n 1) parser plus)))
-         (return [x . xs]))
-        (if (> n 0) (fail) (return []))))
-
-
-
-;; sepby1:: Parser a -> Parser b -> Parser [a]
-;; p ‘sepby1‘ sep = [x:xs | x <- p , xs <- many [y | _ <- sep , y <- p]]   
-
-(def (sepby1 p sep (plus +++))
-  (.let* ((x p) (xs (many (.let* ((_ sep) (y p)) (return y)) plus))) 
-   (return [x . xs])))
-
-
+;; [[file:~/src/smug-gerbil/parser.org::*~.cons%5B*%5D~,%20~.%5Bmake-%5D%5Blist|string%5D~,%20~.%5Blist|string%5D->%5Bstring|number%5D~][]]
 (def (.cons p q) (.let* ((x p) (y q)) (cons x y)))
 
 (def (.list p . ps)
@@ -153,14 +195,31 @@
 (def (.make-string count (fill (item))) (.list->string (.make-list count fill)))
 
 (def (.string->number p) ((liftP string->number) p))
+;; ends here
 
+;; [[file:~/src/smug-gerbil/parser.org::*~ci=?~.%20Case%20insensitivity%20arises%20a%20lot.][]]
+(def (ci=? t)
+  (cond ((char? t) (.char-ci=? t))
+        ((string? t) (.string-ci=? t))
+        ((list? t) (.list= char-ci=? t))))
+;; ends here
 
+;; [[file:~/src/smug-gerbil/parser.org::*~.not~%20and%20~peek~][]]
+(def (peek p)
+  (def npek (gensym))
+  (def (peeked? v) (not (eq? v npek)))
+  (.let* ((peek? npek)
+          (_ (.or (.let* (r p) (set! peek? r) FAIL) (void))))
+    (sat peeked? (return peek?))))
+;; ends here
 
+;; [[file:~/src/smug-gerbil/parser.org::*~.not~%20and%20~peek~][]]
 (def (.not p)
-  (.let* (?? #t)
-   (.or (.let* (_ p) (set! ?? #f) (fail))
-        (.let* (_ (return #!void)) (if ?? (return #t) (fail))))))
+  (let (no (gensym)) (sat (cut eq? <> no) (.or p (return no)))))
+;; ends here
 
+
+;;; TODO: Replace soon -- me@drewc.ca
 (def (.read-line eof-fail?: (eof-fail? #f)
                  include-newline?: (nl? #t)
                  return: (ret list->string))
@@ -169,16 +228,3 @@
       (cond ((eof-object? c) (if eof-fail? (fail) (ret (reverse! cs))))
             ((char=? #\newline c) (ret (reverse! (if nl? (cons c cs) cs))))
             (#t (line (cons c cs)))))))
-
-(def (.string=? str (return-parsed? #f) (char? char=?))
-  (def (str= lst)
-    (if (null? lst)
-      (return [])
-      (.let* ((c (sat (cut char? <> (car lst))))
-              (cs (str= (cdr lst))))
-       (if return-parsed? [c . cs] []))))
-  (let (lst (string->list str))
-    (.let* (v (str= lst)) (if return-parsed? (list->string v) (return str)))))
-
-(def (.string-ci=? str (p? #f))
-  (.string=? str p? char-ci=?))

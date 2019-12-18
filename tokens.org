@@ -1,0 +1,149 @@
+#+TITLE: Feed Parser, Tokens a bag. Tokens, Tokens, Tokens a bag.
+
+Often when parsing a string, we want to break it up into lexical tokens before
+parsing those. By default, the parser parses ~String~'s. It's extensible
+primarily for this reason.
+
+* Singular Token 
+
+  A token is simply a structure that stores the start and end point in the parsee,
+  the type of the token, and the value of the token.
+
+  #+begin_src gerbil :noweb-ref tokens
+    (defstruct token (start end type value) transparent: #t)
+  #+end_src
+
+  Using that we can make a combinator which takes any parser and turns it
+  into a token.
+
+  #+begin_src gerbil :noweb-ref tokens 
+    (def (tokenP p type: (t 'Token) constructor: (makeT make-token))
+      (.let* ((b (point)) (v p) (e (point))) (return (makeT b e t v))))
+  #+end_src
+
+  To make it simple we'll make three types of tokens: ~WhiteSpace~, ~AlphaNum~,
+  ~Symbol~. 
+
+  #+begin_src gerbil
+    (def WhiteSpace (sat char-whitespace?))
+    (def AlphaNum (.list->string (many1 (sat (? (or char-alphabetic? char-numeric?))))))
+    (def Symbol (sat (? (and (not char-whitespace?) (not char-numeric?) (not char-alphabetic?)))))
+  #+end_src
+
+  Putting them together, as ~token~'s, gives us a lexical definition.
+
+  #+begin_src gerbil
+    (def LexicalToken (.or (tokenP WhiteSpace type: 'WhiteSpace)
+                           (tokenP AlphaNum type: 'AlphaNum)
+                           (tokenP Symbol type: 'Symbol)))
+  #+end_src
+
+  We can then use that to create a vector of tokens.
+
+  #+begin_src gerbil
+    (def (tokenize str p)
+      (run (.let* (ts (many p)) (list->vector ts)) str))
+  #+end_src
+
+  To test it, we'll use a simple sentence. 
+
+  #+begin_src gerbil
+    (def test-str "The students will all be tested again at the end of the school year.")
+
+    (def test-tokens (tokenize test-str LexicalToken))
+  #+end_src
+
+ Now, ~ITEM~ returns individual tokens
+ 
+  #+begin_src gerbil
+    (let (t (run ITEM test-tokens))
+      (check (token-type t) => 'AlphaNum)
+      (check (token-value t) => "The"))
+  #+end_src
+
+  We have a vector of tokens which our ~.let*~ can go through. In order to make
+  things shorthand, we'll have a reader parser combinator that consumes a token
+  if it passes.
+
+  #+begin_src gerbil :noweb-ref tokens
+    (def (token-reader? p (reader token-value))
+      (def (make-str v)
+        (cond ((string? v) v)
+              ((char? v) (string v))
+              (#t (with-output-to-string "" (cut display v)))))
+      (.let* (val ((liftP reader) ITEM))
+        (if (and (not (procedure? p))
+                 (eqv? (type-of p) (type-of val)))
+          (sat (cut equal? p <>) (return val))
+          (let ((str (make-str val))
+                (P (if (procedure? p) p
+                       (.let* (r p) (return r)))))
+            (sat identity (return (run P str)))))))
+  #+end_src
+
+
+  That can be used to export 4 parsers for existing readers.
+
+  #+begin_src gerbil :noweb-ref tokens
+    (def (token-start? p) (token-reader? p token-start))
+    (def (token-end? p) (token-reader? p token-end))
+    (def (token-value? p) (token-reader? p token-value))
+    (def (token-type? p) (token-reader? p token-type))
+  #+end_src
+  
+   Each one of those consumes a token.
+
+  #+begin_src gerbil
+    (check (run (.begin (token-value? "The")
+                 (token-type? 'WhiteSpace)
+                 (.begin (peek (token-type? "A"))
+                         (token-value? (sat char-lower-case?)))
+                 (token-type? 'WhiteSpace)
+                 ((liftP token-value) ITEM))
+                test-tokens)
+           => "will")
+  #+end_src
+
+
+* /syntax/ ~Token~
+
+Because ~token~s are used so often, a little syntax is good to have. 
+
+#+begin_src gerbil :noweb-ref tokens
+  (defsyntax (Token stx)
+    (syntax-case stx ()
+      ((macro [args ...] body ...)
+       (datum->syntax #'macro `(.or (tokenP ,@(syntax->datum #'(args ...)))
+                                    (Token ,@(syntax->datum #'(body ...))))))
+      ((macro t rest ...)
+       #'(macro [t type: 't] rest ...))
+      (_ #'FAIL)))
+#+end_src
+
+This way, our earlier definition becomes quite simple.
+
+  #+begin_src gerbil
+    (def Tokens (Token WhiteSpace AlphaNum Symbol))
+  #+end_src
+
+  #+begin_src gerbil
+    (def test-tokens-tokens (tokenize test-str Tokens))
+    (check test-tokens => test-tokens-tokens)
+  #+end_src
+
+
+* /file/ ~tokens.ss~
+
+#+begin_src gerbil :noweb yes :tangle tokens.ss
+  ;;; -*- Gerbil -*-
+  ;;; (C) me at drewc.ca
+
+  (import :drewc/smug/primitive :drewc/smug/simple :std/generic)
+  (export #t)
+
+  <<all-tokens>>
+#+end_src
+
+#+begin_src gerbil :noweb yes :noweb-ref all-tokens :comments noweb
+<<tokens>>
+#+end_src
