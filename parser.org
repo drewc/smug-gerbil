@@ -1577,29 +1577,51 @@ use, easy to view, and, ehem, easy to debug.
 
    There have been a lot of ~(.let* (_ ...) ...)~ forms. While being able to
    ignore something is great, and we'll actually use that, those familiar with
-   scheme see it right now.
+   scheme see a ~.begin~'ing right now.
+
+   What I'll also do it wrap the whole form in a ~(lambda (inp) (... inp))~.
+   This way we can define parsers as toplevel variables while using as of yet
+   undefined toplevel variables.
 
    #+begin_src gerbil :noweb-ref begins
+     (defsyntax (.begin stx)
+       (def ret (gensym))
+       (syntax-case stx ()
+         ((m bind: P Ps ...)
+          (let* ((restps (syntax->datum #'(Ps ...)))
+                 (rest-form (if (null? restps) `(return ,ret)
+                             `(.begin ,@restps)))
+                 (p (syntax->datum #'P)))
+            (datum->syntax #'m
+              `(.let* (,(if (null? restps) ret '_) ,p) ,rest-form))))
+         ((m P Ps ...)
+          #'(lambda (inp) ((m bind: P Ps ...) inp)))))
+
      ;; (defrules .begin ()
      ;;     ((macro p)
      ;;      (.let* (x p) (return x)))
      ;;     ((macro p ps ...)
      ;;      (.let* (_ p) (macro ps ...))))
 
-     (defsyntax (.begin stx)
-       (def ret (gensym))
-       (syntax-case stx ()
-         ((macro P)
-          (datum->syntax #'macro `(.let* (,ret ,(syntax->datum #'P))
-                                    (return ,ret))))
-         ((macro P Ps ...)
-          (datum->syntax #'macro `(.let* (_ ,(syntax->datum #'P))
-                                              (.begin ,@(syntax->datum #'(Ps ...))))))))
+     ;; (defsyntax (.begin stx)
+     ;;   (def inp (gensym))
+     ;;   (def ret (gensym))
+     ;;   (syntax-case stx ()
+     ;;     ((macro P)
+     ;;      (datum->syntax
+     ;;          #'macro `(lambda (,inp) ((.let* (,ret ,(syntax->datum #'P))
+     ;;                                (return ,ret))))
+     ;;     ((macro P Ps ...)
+     ;;      (datum->syntax #'macro `(.let* (_ ,(syntax->datum #'P))
+     ;;                                          (.begin ,@(syntax->datum #'(Ps ...))))))))
      (defrules .begin0 ()
        ((macro p)
-        (.let* (x p) (return x)))
+        (.begin p))
        ((macro p ps ...)
-        (.let* ((x p) (_ (.begin (macro ps ...)))) (return x))))
+        (.begin (.let* ((x p)
+                        (_ (.begin ps ...)))
+                  (return x)))))
+
 
    #+end_src
   
@@ -2289,7 +2311,7 @@ is presented up above, which is why we are doing them all.
           (def EmptyStatement (.begin (.or (token-value? #\;) (token-value? #\newline))
                                       (return (empty-statement))))
 
-          (defstruct (return-statement statement) (expression) transparent: #t)
+         (defstruct (return-statement statement) (expression) transparent: #t) 
 
           (def ReturnStatement
             (.let* ((expression (.begin (peek (token-type? 'IdentifierName))
@@ -2330,7 +2352,7 @@ is presented up above, which is why we are doing them all.
    #+end_quote
   
   #+begin_src gerbil
-    (defstruct (function-expression expression) (identifier parameters body) transparent: #t)
+   (defstruct (function-expression expression) (identifier parameters body) transparent: #t) 
     (def FunctionExpression
       (.let* ((id (.begin (peek (token-type? 'IdentifierName))
                           (token-value? "function")

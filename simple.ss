@@ -154,26 +154,44 @@
 ;; ends here
 
 ;; [[file:~/src/smug-gerbil/parser.org::*~.begin~%20and%20~.begin0~][]]
+(defsyntax (.begin stx)
+  (def ret (gensym))
+  (syntax-case stx ()
+    ((m bind: P Ps ...)
+     (let* ((restps (syntax->datum #'(Ps ...)))
+            (rest-form (if (null? restps) `(return ,ret)
+                        `(.begin ,@restps)))
+            (p (syntax->datum #'P)))
+       (datum->syntax #'m
+         `(.let* (,(if (null? restps) ret '_) ,p) ,rest-form))))
+    ((m P Ps ...)
+     #'(lambda (inp) ((m bind: P Ps ...) inp)))))
+
 ;; (defrules .begin ()
 ;;     ((macro p)
 ;;      (.let* (x p) (return x)))
 ;;     ((macro p ps ...)
 ;;      (.let* (_ p) (macro ps ...))))
 
-(defsyntax (.begin stx)
-  (def ret (gensym))
-  (syntax-case stx ()
-    ((macro P)
-     (datum->syntax #'macro `(.let* (,ret ,(syntax->datum #'P))
-                               (return ,ret))))
-    ((macro P Ps ...)
-     (datum->syntax #'macro `(.let* (_ ,(syntax->datum #'P))
-                                         (.begin ,@(syntax->datum #'(Ps ...))))))))
+;; (defsyntax (.begin stx)
+;;   (def inp (gensym))
+;;   (def ret (gensym))
+;;   (syntax-case stx ()
+;;     ((macro P)
+;;      (datum->syntax
+;;          #'macro `(lambda (,inp) ((.let* (,ret ,(syntax->datum #'P))
+;;                                (return ,ret))))
+;;     ((macro P Ps ...)
+;;      (datum->syntax #'macro `(.let* (_ ,(syntax->datum #'P))
+;;                                          (.begin ,@(syntax->datum #'(Ps ...))))))))
 (defrules .begin0 ()
   ((macro p)
-   (.let* (x p) (return x)))
+   (.begin p))
   ((macro p ps ...)
-   (.let* ((x p) (_ (.begin (macro ps ...)))) (return x))))
+   (.begin (.let* ((x p)
+                   (_ (.begin ps ...)))
+             (return x)))))
+
 
 ;; ends here
 
