@@ -1,4 +1,4 @@
-#+TITLE: Smug Parser  
+#+TITLE: Smug Parser
 
 #+begin_src gerbil :tangle "parser.ss"
   package: drewc
@@ -7,7 +7,7 @@
 
   (export (import: :drewc/smug/primitive)
           (import: :drewc/smug/simple)
-          (import: :drewc/smug/prefix))
+          (import: :drewc/smug/tokens))
 #+end_src
 
 
