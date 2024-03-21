@@ -73,7 +73,7 @@ primarily for this reason.
               (#t (with-output-to-string "" (cut display v)))))
       (.let* (val ((liftP reader) ITEM))
         (if (and (not (procedure? p))
-                 (eqv? (type-of p) (type-of val)))
+                 (eqv? (class-of p) (class-of val)))
           (sat (cut equal? p <>) (return val))
           (let ((str (make-str val))
                 (P (if (procedure? p) p

@@ -25,9 +25,9 @@
 ;; ends here
 ;; [[file:~/src/smug-gerbil/parser.org::#ITEM_and_item][]]
 (defgeneric input-item (cut error "No input-item declared for : " <>))
-(defmethod (input-item (str <string>)) (input-item (String 0 str)))
-(defmethod (input-item (str <pair>)) (input-item (String 0 str)))
-(defmethod (input-item (str <vector>)) (input-item (String 0 str)))
+(defmethod (input-item (str :string)) (input-item (String 0 str)))
+(defmethod (input-item (str :pair)) (input-item (String 0 str)))
+(defmethod (input-item (str :vector)) (input-item (String 0 str)))
 (defmethod (input-item (str String))
   (match str
     ((String point parsee)
@@ -181,7 +181,7 @@
 (defgeneric input-goto-char
   (lambda (input pos) (input-goto-char (String pos input))))
 
-(defmethod (input-goto-char (inp String) (pos <t>))
+(defmethod (input-goto-char (inp String) (pos :t))
   (match inp ((String p i) [`(pos . ,(String pos i))])))
 
 (def (goto-char n) (cut input-goto-char <> n))
