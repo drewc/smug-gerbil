@@ -1,1 +1,3 @@
 build-deps*
+gambit.log
+manifest.ss
